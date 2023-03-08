@@ -42,7 +42,9 @@ GOOS=$(shell go env GOOS)
 GOBIN=$(shell pwd)/bin
 
 .PHONY: juicefs-csi-driver
-juicefs-csi-driver:
+juicefs-csi-driver: clean tidy fmt vet compile
+
+compile:
 	mkdir -p bin
 	CGO_ENABLED=0 GOOS=linux go build -ldflags ${LDFLAGS} -o bin/juicefs-csi-driver ./cmd/
 
@@ -286,3 +288,28 @@ bin/mockgen: | bin
 
 mockgen: bin/mockgen
 	./hack/update-gomock
+
+.PHONY: clean
+clean:
+	rm -rf bin
+
+.PHONY: tidy
+tidy:
+	go mod tidy
+
+.PHONY: fmt
+fmt:
+	go fmt ./...
+
+.PHONY: vet
+vet:
+	go vet ./...
+
+.PHONY: tmdc-image-build
+tmdc-image-build: juicefs-csi-driver
+	docker build --build-arg TARGETARCH=$(TARGETARCH) -t $(IMAGE):v0.18.1-d1 -f docker/dev.Dockerfile bin
+
+.PHONY: tmdc-image-push
+tmdc-image-push: tmdc-image-build
+	docker tag $(IMAGE):v0.18.1-d1 rubiklabs/juicefs-csi-driver:v0.18.1-d1
+	docker push rubiklabs/juicefs-csi-driver:v0.18.1-d1
