@@ -159,7 +159,6 @@ type PodAttr struct {
 	VolumeMounts                  []corev1.VolumeMount  `json:"volumeMounts,omitempty"`
 	Env                           []corev1.EnvVar       `json:"env,omitempty"`
 	CacheDirs                     []MountPatchCacheDir  `json:"cacheDirs,omitempty"`
-	InitContainers                []corev1.Container    `json:"initContainers,omitempty"`
 	HostnameKey                   string                `json:"-"`
 
 	// inherit from csi
@@ -1107,7 +1106,6 @@ func applyConfigPatch(setting *JfsSetting, replaceTemplate bool) {
 	attr.VolumeMounts = patch.VolumeMounts
 	attr.Volumes = patch.Volumes
 	attr.Env = patch.Env
-	attr.InitContainers = patch.InitContainers
 	attr.CacheDirs = patch.CacheDirs
 
 	newOptions := make([]string, 0)
@@ -1214,9 +1212,6 @@ func GenHashOfSetting(log klog.Logger, setting JfsSetting) string {
 		})
 		util.SortBy(s.Attr.HostAliases, func(i, j int) bool {
 			return strings.Compare(s.Attr.HostAliases[i].IP, s.Attr.HostAliases[j].IP) < 0
-		})
-		util.SortBy(s.Attr.InitContainers, func(i, j int) bool {
-			return strings.Compare(s.Attr.InitContainers[i].Name, s.Attr.InitContainers[j].Name) < 0
 		})
 	}
 
