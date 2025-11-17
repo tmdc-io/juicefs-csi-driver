@@ -9,7 +9,7 @@ Kubernetes allows much easier and efficient resource utilization, in JuiceFS CSI
 
 Every application Pod that uses JuiceFS PV requires a running Mount Pod (reused for Pods using a same PV), thus configuring proper resource definition for Mount Pod can effectively optimize resource usage. Read [Resource Management for Pods and Containers](https://kubernetes.io/docs/concepts/configuration/manage-resources-containers) to learn about Pod resource requests and limits.
 
-Under the default settings, JuiceFS Mount Pod resource `requests` is 1 CPU and 1GiB memory, resource `limits` is 2 CPU and 5GiB memory, this might not be the perfect setup for you since JuiceFS is used in so many different scenarios, you should make adjustments to fit the actual resource usage:
+Under the default settings, JuiceFS Mount Pod resource `requests` is 1 CPU and 1GiB memory, resource `limits` is 5 CPU and 5GiB memory, this might not be the perfect setup for you since JuiceFS is used in so many different scenarios, you should make adjustments to fit the actual resource usage:
 
 * If actual usage is lower, e.g. Mount Pod uses only 0.1 CPU, 100MiB memory, then you should match the resources `requests` to the actual usage, to avoid wasting resources, or worse, Mount Pod not being able to schedule to due overly large resource `requests`, this might also cause Pod preemptions which should be absolutely avoided in a production environment. For resource `limits`, you should also configure a reasonably larger value, so that the Mount Pod can deal with temporary load increases.
 * If actual usage is higher, e.g. 2 CPU, 2GiB memory, even though the default `requests` allows for its scheduling, things are risky because Mount Pod is using more resources than it declares, this is called overcommitment and constant overcommitment can cause all sorts of stability issues like CPU throttling and OOM. So under this circumstance, you should also adjust requests and limits according to the actual usage.
@@ -245,10 +245,6 @@ However, when the Mount Pod is created, if the node resources are insufficient, 
 
 ## Share Mount Pod for the same StorageClass {#share-mount-pod-for-the-same-storageclass}
 
-:::note
-This method is not available when using static PVs.
-:::
-
 By default, Mount Pod is only shared when multiple application Pods are using a same PV. However, you can take a step further and share Mount Pod (in the same node, of course) for all PVs that are created using the same StorageClass, under this policy, different application Pods will bind the host mount point on different paths, so that one Mount Pod is serving multiple application Pods.
 
 To enable Mount Pod sharing for the same StorageClass, add the `STORAGE_CLASS_SHARE_MOUNT` environment variable to the CSI Node Service:
@@ -257,42 +253,7 @@ To enable Mount Pod sharing for the same StorageClass, add the `STORAGE_CLASS_SH
 kubectl -n kube-system set env -c juicefs-plugin daemonset/juicefs-csi-node STORAGE_CLASS_SHARE_MOUNT=true
 ```
 
-Or when installing with Helm, add the following configuration in `values.yaml`:
-
-```yaml title="values.yaml"
-node:
-  storageClassShareMount: true
-```
-
 Evidently, more aggressive sharing policy means lower isolation level, Mount Pod crashes will bring worse consequences, so if you do decide to use Mount Pod sharing, make sure to enable [automatic mount point recovery](./configurations.md#automatic-mount-point-recovery) as well, and [increase Mount Pod resources](#mount-pod-resources).
-
-## Reuse Mount Pods for the same file system <VersionAdd>0.30.0</VersionAdd> {#share-mount-pod-for-the-same-file-system}
-
-The reuse granularity of StorageClass is StorageClass. If you have multiple StorageClass pointing to the same JuiceFS file system, or using static PVs, they will create different Mount Pods.
-
-If you want to further reduce overhead, you can have all PVs using the same JuiceFS file system reuse the same Mount Pod (of course, reuse can only occur on the same node).
-
-To reuse Mount Pods for the same file system PV, you need to add the `FS_SHARE_MOUNT` environment variable to the CSI Node Service:
-
-```shell
-kubectl -n kube-system set env -c juicefs-plugin daemonset/juicefs-csi-node FS_SHARE_MOUNT=true
-```
-
-Or when installing with Helm, add the following configuration to `values.yaml`:
-
-```yaml title="values.yaml"
-node:
-  fsShareMount: true
-```
-
-:::note
-When configurations differ within the same file system, reuse may not occur, for example:
-
-- Different mount options.
-- In the community edition, multiple meta objects correspond to multiple file systems with the same name. This will fall back to PV-based reuse.
-- In on-premises deployment scenarios where multiple clusters contain file systems with the same name, the system will fall back to PV-based reuse.
-
-:::
 
 ## Clean cache when Mount Pod exits {#clean-cache-when-mount-pod-exits}
 

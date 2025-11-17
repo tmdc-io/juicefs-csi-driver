@@ -540,9 +540,8 @@ func (p *PodDriver) podPendingHandler(ctx context.Context, pod *corev1.Pod) (Res
 	lock.Lock()
 	defer lock.Unlock()
 
-	enableAutoRemove := config.GlobalConfig.EnableAutoRemoveRequestResources == nil || *config.GlobalConfig.EnableAutoRemoveRequestResources
 	// check resource err
-	if resource.IsPodResourceError(pod) && enableAutoRemove {
+	if resource.IsPodResourceError(pod) {
 		log.Info("Pod failed because of resource.")
 		if resource.IsPodHasResource(*pod) {
 			// if pod is failed because of resource, delete resource and deploy pod again.
@@ -620,7 +619,7 @@ func (p *PodDriver) podReadyHandler(ctx context.Context, pod *corev1.Pod) (Resul
 		return Result{}, err
 	}
 
-	supFusePass := util.SupportFusePass(pod)
+	supFusePass := util.SupportFusePass(pod.Spec.Containers[0].Image)
 
 	lock := config.GetPodLock(config.GetPodLockKey(pod, ""))
 	lock.Lock()
@@ -879,11 +878,9 @@ func (p *PodDriver) applyConfigPatch(ctx context.Context, pod *corev1.Pod) error
 		log.Error(err, "gen setting error")
 		return err
 	}
-	podBuilder := builder.NewPodBuilder(setting, 0)
-	setting.SecretName = fmt.Sprintf("juicefs-%s-secret", pod.Labels[common.PodUniqueIdLabelKey])
-	secret := podBuilder.NewSecret()
 	if setting.JuiceFSSecret != nil {
 		// regenerate pod spec
+		podBuilder := builder.NewPodBuilder(setting, 0)
 		newPod, err := podBuilder.NewMountPod(pod.Name)
 		if err != nil {
 			return err
@@ -895,9 +892,11 @@ func (p *PodDriver) applyConfigPatch(ctx context.Context, pod *corev1.Pod) error
 		}
 		newPod.Spec.Affinity = pod.Spec.Affinity
 		newPod.Spec.SchedulerName = pod.Spec.SchedulerName
-		newPod.Spec.Tolerations = util.CopySlice(pod.Spec.Tolerations)
+		newPod.Spec.Tolerations = pod.Spec.Tolerations
 		newPod.Spec.NodeSelector = pod.Spec.NodeSelector
 		if setting.HashVal != pod.Labels[common.PodJuiceHashLabelKey] {
+			// update secret
+			secret := podBuilder.NewSecret()
 			if err := resource.CreateOrUpdateSecret(ctx, p.Client, &secret); err != nil {
 				return err
 			}
@@ -907,7 +906,7 @@ func (p *PodDriver) applyConfigPatch(ctx context.Context, pod *corev1.Pod) error
 		return nil
 	}
 	attr := setting.Attr
-	newPod := pod.DeepCopy()
+	newPod := pod
 	// update pod spec
 	newPod.Labels, newPod.Annotations = builder.GenMetadata(setting)
 	for k, v := range pod.Annotations {
@@ -935,6 +934,10 @@ func (p *PodDriver) applyConfigPatch(ctx context.Context, pod *corev1.Pod) error
 	resource.MergeMountOptions(newPod, setting)
 	resource.MergeVolumes(newPod, setting)
 	if setting.CustomerSecret != nil {
+		// update secret
+		setting.SecretName = fmt.Sprintf("juicefs-%s-secret", pod.Labels[common.PodUniqueIdLabelKey])
+		r := builder.NewPodBuilder(setting, 0)
+		secret := r.NewSecret()
 		if err := resource.CreateOrUpdateSecret(ctx, p.Client, &secret); err != nil {
 			return err
 		}
@@ -1009,7 +1012,7 @@ func (p *PodDriver) DoAbortFuse(mountpod *corev1.Pod, devMinor uint32) error {
 		log.Error(err, "get mount point error")
 		return err
 	}
-	supFusePass := util.SupportFusePass(mountpod)
+	supFusePass := util.SupportFusePass(mountpod.Spec.Containers[0].Image)
 	if supFusePass {
 		err = util.DoWithTimeout(context.Background(), defaultCheckoutTimeout, func(ctx context.Context) error {
 			finfo, err := os.Stat(mntPath)
@@ -1123,7 +1126,7 @@ func (p *PodDriver) newMountPod(ctx context.Context, pod *corev1.Pod, newPodName
 		log.Error(err, "get mount point error")
 		return nil, err
 	}
-	oldSupportFusePass := util.SupportFusePass(pod)
+	oldSupportFusePass := util.SupportFusePass(pod.Spec.Containers[0].Image)
 	var newPod = &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        newPodName,
@@ -1137,8 +1140,8 @@ func (p *PodDriver) newMountPod(ctx context.Context, pod *corev1.Pod, newPodName
 	if err := p.applyConfigPatch(ctx, newPod); err != nil {
 		log.Error(err, "apply config patch error, will ignore")
 	}
-	newSupportFusePass := util.SupportFusePass(newPod)
-	if !newSupportFusePass {
+	newSupportFusePass := util.SupportFusePass(newPod.Spec.Containers[0].Image)
+	if !util.SupportFusePass(newPod.Spec.Containers[0].Image) {
 		if oldSupportFusePass {
 			// old image support fuse pass and new image do not support, stop fd in csi
 			passfd.GlobalFds.StopFd(ctx, pod)

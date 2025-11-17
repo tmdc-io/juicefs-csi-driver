@@ -64,7 +64,7 @@ func (r *PodBuilder) NewMountPod(podName string) (*corev1.Pod, error) {
 	})
 
 	// inject fuse fd
-	if podName != "" && util.SupportFusePass(pod) {
+	if podName != "" && util.SupportFusePass(pod.Spec.Containers[0].Image) {
 		fdAddress, err := passfd.GetFdAddress(context.TODO(), r.jfsSetting.UpgradeUUID)
 		if err != nil {
 			return nil, err
@@ -99,11 +99,6 @@ func (r *PodBuilder) NewMountPod(podName string) (*corev1.Pod, error) {
 	}
 	if r.jfsSetting.Attr.VolumeDevices != nil {
 		pod.Spec.Containers[0].VolumeDevices = append(pod.Spec.Containers[0].VolumeDevices, r.jfsSetting.Attr.VolumeDevices...)
-	}
-
-	// add init containers from configuration
-	if len(r.jfsSetting.Attr.InitContainers) > 0 {
-		pod.Spec.InitContainers = append(pod.Spec.InitContainers, r.jfsSetting.Attr.InitContainers...)
 	}
 
 	return pod, nil
@@ -307,7 +302,7 @@ func (r *PodBuilder) genCleanCachePod() *corev1.Pod {
 	cacheVolumes := []corev1.Volume{}
 	cacheVolumeMounts := []corev1.VolumeMount{}
 
-	hostPathType := corev1.HostPathDirectoryOrCreate
+	hostPathType := corev1.HostPathDirectory
 
 	for idx, cacheDir := range r.jfsSetting.CacheDirs {
 		name := fmt.Sprintf("cachedir-%d", idx)

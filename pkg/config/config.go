@@ -51,7 +51,6 @@ var (
 	ValidatingWebhook      = false            // start validating webhook, applicable to ee only
 	Immutable              = false            // csi driver is running in an immutable environment
 	StorageClassShareMount = false            // share mount pod for the same storage class
-	FSShareMount           = false            // share mount pod for the same file system
 	AccessToKubelet        = false            // access kubelet or not
 
 	DriverName               = "csi.juicefs.com"
@@ -86,9 +85,6 @@ var (
 
 	DefaultCEMountImage = "juicedata/mount:ce-nightly" // mount pod ce image, override by ENV
 	DefaultEEMountImage = "juicedata/mount:ee-nightly" // mount pod ee image, override by ENV
-
-	BuiltinCeVersion = "nightly"
-	BuiltinEeVersion = "nightly"
 )
 
 // env auto set by the csi side
@@ -208,7 +204,6 @@ type MountPodPatch struct {
 	Annotations                   map[string]string            `json:"annotations,omitempty"`
 	HostNetwork                   *bool                        `json:"hostNetwork,omitempty" `
 	HostPID                       *bool                        `json:"hostPID,omitempty" `
-	HostnameKey                   string                       `json:"hostnameKey,omitempty"`
 	LivenessProbe                 *corev1.Probe                `json:"livenessProbe,omitempty"`
 	ReadinessProbe                *corev1.Probe                `json:"readinessProbe,omitempty"`
 	StartupProbe                  *corev1.Probe                `json:"startupProbe,omitempty"`
@@ -219,7 +214,6 @@ type MountPodPatch struct {
 	VolumeDevices                 []corev1.VolumeDevice        `json:"volumeDevices,omitempty"`
 	VolumeMounts                  []corev1.VolumeMount         `json:"volumeMounts,omitempty"`
 	Env                           []corev1.EnvVar              `json:"env,omitempty"`
-	InitContainers                []corev1.Container           `json:"initContainers,omitempty"`
 	MountOptions                  []string                     `json:"mountOptions,omitempty"`
 }
 
@@ -339,9 +333,6 @@ func (mpp *MountPodPatch) merge(mp MountPodPatch) {
 			mpp.VolumeDevices = append(mpp.VolumeDevices, vm)
 		}
 	}
-	if mp.InitContainers != nil {
-		mpp.InitContainers = mp.InitContainers
-	}
 	if mp.Env != nil {
 		mpp.Env = mp.Env
 	}
@@ -351,9 +342,6 @@ func (mpp *MountPodPatch) merge(mp MountPodPatch) {
 	if mp.CacheDirs != nil {
 		mpp.CacheDirs = mp.CacheDirs
 	}
-	if mp.HostnameKey != "" {
-		mpp.HostnameKey = mp.HostnameKey
-	}
 }
 
 // TODO: migrate more config for here
@@ -362,16 +350,8 @@ type Config struct {
 	EnableNodeSelector bool `json:"enableNodeSelector,omitempty"`
 	// in sidecar mode, use k8s native sidecar instead of container
 	// If the k8s version is 1.29 and later, the default is true.
-	EnableNativeSidecar *bool `json:"enableNativeSidecar,omitempty"`
-	// enable set quota according to capacity settings, the default is true.
-	EnableSetQuota *bool `json:"enableSetQuota,omitempty"`
-	// enable set quota in controller (CreateVolume/Provisioner)
-	// if enabled, SetQuota will be called in controller
-	// if disabled, SetQuota will be called in node (NodePublishVolume)
-	EnableControllerSetQuota *bool `json:"enableControllerSetQuota,omitempty"`
-	// enable auto remove request resources when pod has resources error, the default is true
-	EnableAutoRemoveRequestResources *bool           `json:"enableAutoRemoveRequestResources,omitempty"`
-	MountPodPatch                    []MountPodPatch `json:"mountPodPatch"`
+	EnableNativeSidecar *bool           `json:"enableNativeSidecar,omitempty"`
+	MountPodPatch       []MountPodPatch `json:"mountPodPatch"`
 }
 
 func (c *Config) Unmarshal(data []byte) error {
@@ -382,7 +362,7 @@ func (c *Config) Unmarshal(data []byte) error {
 // 1. match pv selector
 // 2. parse template value
 // 3. return the merged mount pod patch
-func (c *Config) GenMountPodPatch(setting JfsSetting, replaceTemplate bool) MountPodPatch {
+func (c *Config) GenMountPodPatch(setting JfsSetting) MountPodPatch {
 	patch := &MountPodPatch{
 		Labels:      map[string]string{},
 		Annotations: map[string]string{},
@@ -400,16 +380,14 @@ func (c *Config) GenMountPodPatch(setting JfsSetting, replaceTemplate bool) Moun
 		patch.Image = patch.EEMountImage
 	}
 
-	if replaceTemplate {
-		data, _ := json.Marshal(patch)
-		strData := string(data)
-		strData = strings.ReplaceAll(strData, "${MOUNT_POINT}", setting.MountPath)
-		strData = strings.ReplaceAll(strData, "${VOLUME_ID}", setting.VolumeId)
-		strData = strings.ReplaceAll(strData, "${VOLUME_NAME}", setting.Name)
-		strData = strings.ReplaceAll(strData, "${SUB_PATH}", setting.SubPath)
-		_ = json.Unmarshal([]byte(strData), patch)
-		log.V(1).Info("volume using patch", "volumeId", setting.VolumeId, "patch", patch)
-	}
+	data, _ := json.Marshal(patch)
+	strData := string(data)
+	strData = strings.ReplaceAll(strData, "${MOUNT_POINT}", setting.MountPath)
+	strData = strings.ReplaceAll(strData, "${VOLUME_ID}", setting.VolumeId)
+	strData = strings.ReplaceAll(strData, "${VOLUME_NAME}", setting.Name)
+	strData = strings.ReplaceAll(strData, "${SUB_PATH}", setting.SubPath)
+	_ = json.Unmarshal([]byte(strData), patch)
+	log.V(1).Info("volume using patch", "volumeId", setting.VolumeId, "patch", patch)
 	return *patch
 }
 

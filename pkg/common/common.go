@@ -97,10 +97,4 @@ const (
 
 	JfsUpgradeJobName = "juicefs-job-name"
 	JfsUpgradeConfig  = "juicefs-upgrade-config"
-
-	ControllerQuotaSetKey = "juicefs/controller-quota-set"
-
-	// mount share mode
-	// only accept two value, storageClassShareMount or fsShareMount
-	JuicefsMountShareMode = "juicefs/mount-share-mode"
 )

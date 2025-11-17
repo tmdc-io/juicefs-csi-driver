@@ -28,26 +28,6 @@ You can use `kubectl wait` to wait until the operator is ready:
 kubectl wait -n juicefs-operator --for=condition=Available=true --timeout=120s deployment/juicefs-operator
 ```
 
-## Update JuiceFS Operator {#update-juicefs-operator}
-
-If you need to update the Operator, you can use the following commands:
-
-```shell
-helm repo update
-helm upgrade juicefs-operator juicefs/juicefs-operator -n juicefs-operator --reuse-values
-```
-
-:::note
-
-Due to Helm's limitations, CRDs are not updated together when upgrading, so please manually update the CRDs after updating the Operator:
-
-```shell
-export CHART_VERSION=$(helm show chart juicefs/juicefs-operator | grep appVersion | awk '{print $2}')
-kubectl apply -f https://raw.githubusercontent.com/juicedata/juicefs-operator/refs/tags/v${CHART_VERSION}/dist/crd.yaml
-```
-
-:::
-
 Once the Cache Group Operator is installed, you can start creating and managing cache groups. The operations introduced in the following sections can be completed through both the CSI Dashboard (version 0.25.3 or above) and `kubectl`. Choose the method you prefer. To simplify the documentation examples, only the `kubectl` method will be introduced.
 
 ![Cache Group Dashboard](../images/cache-group-dashboard.png)
@@ -72,17 +52,14 @@ stringData:
   token: xx
   access-key: xx
   secret-key: xx
-  # envs: '{"BASE_URL": "http://<IP or HOST>/static"}'
 ---
 apiVersion: juicefs.io/v1
 kind: CacheGroup
 metadata:
   name: cachegroup-sample
-  namespace: juicefs-cache-group
 spec:
   secretRef:
     name: juicefs-secret
-  cacheGroup: juicefs-cache-group-cachegroup-sample # Custom cache group name, default is `${NAMESPACE}-${NAME}`
   worker:
     template:
       nodeSelector:
@@ -92,9 +69,6 @@ spec:
         - cache-size=204800
         - free-space-ratio=0.01
         - group-weight=100
-      cacheDirs:
-        - type: HostPath
-          path: /mnt/cache
       resources:
         requests:
           cpu: 100m
@@ -166,7 +140,6 @@ When nodes change, the Cache Group Operator will smoothly add or delete nodes. T
   kind: CacheGroup
   metadata:
     name: cachegroup-sample
-    namespace: juicefs-cache-group
   spec:
     backupDuration: 10m
   ```
@@ -178,7 +151,6 @@ When nodes change, the Cache Group Operator will smoothly add or delete nodes. T
   kind: CacheGroup
   metadata:
     name: cachegroup-sample
-    namespace: juicefs-cache-group
   spec:
     waitingDeletedMaxDuration: 1h
   ```
@@ -186,89 +158,6 @@ When nodes change, the Cache Group Operator will smoothly add or delete nodes. T
 ### Cache group configurations {#cache-group-configs}
 
 All supported cache group configurations can be found in the [complete example](https://github.com/juicedata/juicefs-operator/blob/main/config/samples/v1_cachegroup.yaml).
-
-### Specify Worker Replicas <VersionAdd>0.6.0</VersionAdd> {#worker-replicas}
-
-You can specify the number of worker replicas in the cache group by setting the `spec.replicas` field:
-
-:::note
-
-1. The replicas can only be set during creation and cannot be deleted.
-2. When using this method, ensure that Pod IPs are fixed and the cache disk can follow Pod migration to other nodes, otherwise it may lead to cache penetration.
-3. The `worker.overwrite` field will not be applicable in this mode, meaning different nodes cannot have different configurations.
-
-:::
-
-```yaml
-apiVersion: juicefs.io/v1
-kind: CacheGroup
-metadata:
-  name: cachegroup-sample
-  namespace: juicefs-cache-group
-spec:
-  replicas: 3    # Specify to create 3 worker replicas
-  worker:
-    template:
-      nodeSelector:
-        juicefs.io/cg-worker: "true"
-      image: juicedata/mount:ee-5.1.1-1faf43b
-      opts:
-        - cache-size=204800
-        - free-space-ratio=0.01
-        - group-weight=100
-      cacheDirs:
-        - type: VolumeClaimTemplates
-          volumeClaimTemplate:
-            metadata:
-              name: jfs-cache
-            spec:
-              accessModes:
-              - ReadWriteOnce
-              resources:
-                requests:
-                  storage: 20Gi
-              storageClassName: <your-storage-class-name>
-```
-
-This way, you can precisely control the number of workers in the cache group instead of relying on the number of node labels.
-
-### Affinity and anti-affinity <VersionAdd>0.7.2</VersionAdd> {#affinity-and-anti-affinity}
-
-By default, the Cache Group Operator deploys workers on all nodes that match the `nodeSelector` without following Node and Pod affinity and anti-affinity rules.
-
-Starting from version `v0.7.2`, the Cache Group Operator supports enabling scheduling functionality through the `spec.enableScheduling` field.
-
-For example, to deploy cache groups in different zones.
-
-:::note
-
-Only process the `requiredDuringSchedulingIgnoredDuringExecution` rule.
-
-:::
-
-```yaml {9-21}
-apiVersion: juicefs.io/v1
-kind: CacheGroup
-metadata:
-  name: cachegroup-sample
-  namespace: juicefs-cache-group
-spec:
-  secretRef:
-    name: cachegroup-sample-secret
-  enableScheduling: true
-  worker:
-    template:
-      affinity:
-        podAntiAffinity:
-          requiredDuringSchedulingIgnoredDuringExecution:
-            - labelSelector:
-                matchExpressions:
-                  - key: juicefs.io/cache-group
-                    operator: In
-                    values:
-                      - cachegroup-sample
-              topologyKey: "topology.kubernetes.io/zone"
-```
 
 ### Update strategy {#update-strategy}
 
@@ -284,7 +173,6 @@ apiVersion: juicefs.io/v1
 kind: CacheGroup
 metadata:
   name: cachegroup-sample
-  namespace: juicefs-cache-group
 spec:
   updateStrategy:
     type: RollingUpdate
@@ -294,14 +182,14 @@ spec:
 
 ### Cache directory {#cache-directory}
 
-The cache directory can be set using the `spec.worker.template.cacheDirs` field. Supported types are `HostPath`, `PVC` and `VolumeClaimTemplates` <VersionAdd>0.6.0</VersionAdd>.
+The cache directory can be set using the `spec.worker.template.cacheDirs` field. Supported types are `HostPath` and `PVC`.
 
 ```yaml {12-16}
 apiVersion: juicefs.io/v1
 kind: CacheGroup
 metadata:
   name: cachegroup-sample
-  namespace: juicefs-cache-group
+  namespace: default
 spec:
   worker:
     template:
@@ -313,18 +201,6 @@ spec:
           path: /var/jfsCache-0
         - type: PVC
           name: juicefs-cache-pvc
-        # v0.6.0 and above support VolumeClaimTemplates
-        - type: VolumeClaimTemplates
-          volumeClaimTemplate:
-            metadata:
-              name: jfs-cache
-            spec:
-              accessModes:
-              - ReadWriteOnce
-              resources:
-                requests:
-                  storage: 20Gi
-              storageClassName: <your-storage-class-name>
 ```
 
 ### Specify different configurations for different nodes {#specify-different-configurations-for-different-nodes}
@@ -336,7 +212,6 @@ apiVersion: juicefs.io/v1
 kind: CacheGroup
 metadata:
   name: cachegroup-sample
-  namespace: juicefs-cache-group
 spec:
   worker:
     template:
@@ -373,7 +248,7 @@ apiVersion: juicefs.io/v1
 kind: CacheGroup
 metadata:
   name: cachegroup-sample
-  namespace: juicefs-cache-group
+  namespace: default
 spec:
   worker:
     template:
@@ -407,7 +282,6 @@ apiVersion: juicefs.io/v1
 kind: CacheGroup
 metadata:
   name: cachegroup-sample
-  namespace: juicefs-cache-group
 spec:
   cleanCache: true
 ```
@@ -429,7 +303,6 @@ apiVersion: juicefs.io/v1
 kind: WarmUp
 metadata:
   name: warmup-sample
-  namespace: juicefs-cache-group
 spec:
   cacheGroupName: cachegroup-sample
   # The default strategy is Once, meaning it run only once.

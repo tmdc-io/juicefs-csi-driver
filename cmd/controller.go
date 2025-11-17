@@ -94,10 +94,6 @@ func parseControllerConfig() {
 	if os.Getenv("STORAGE_CLASS_SHARE_MOUNT") == "true" {
 		config.StorageClassShareMount = true
 	}
-	if os.Getenv("FS_SHARE_MOUNT") == "true" {
-		config.FSShareMount = true
-	}
-
 	if !config.Webhook {
 		// When not in sidecar mode, we should inherit attributes from CSI Node pod.
 		k8sclient, err := k8s.NewClient()
@@ -119,7 +115,9 @@ func parseControllerConfig() {
 		}
 
 		csiPod := &pods[0]
-		config.CSIPod = *csiPod.DeepCopy()
+		config.CSIPod = corev1.Pod{
+			Spec: csiPod.Spec,
+		}
 		log.Info("Get CSI pod successfully", "pod", csiPod.Name)
 	}
 }

@@ -151,13 +151,40 @@ func (p *PodMount) UmountTarget(ctx context.Context, target, podName string) err
 		log.Info("Clean mount point error", "error", err)
 		return err
 	}
+
+	// check mount pod is need to delete
+	log.Info("Delete target ref and check mount pod is need to delete or not.", "target", target, "podName", podName)
+
+	if podName == "" {
+		// mount pod not exist
+		log.Info("Mount pod of target not exists.", "target", target)
+		return nil
+	}
+
+	key := util.GetReferenceKey(target)
+	log.V(1).Info("Target hash of target", "target", target, "key", key)
+
+	err := retry.RetryOnConflict(retry.DefaultBackoff, func() error {
+		po, err := p.K8sClient.GetPod(ctx, podName, jfsConfig.Namespace)
+		if err != nil {
+			return err
+		}
+		annotation := po.Annotations
+		if _, ok := annotation[key]; !ok {
+			log.Info("Target ref in pod already not exists.", "target", target, "podName", podName)
+			return nil
+		}
+		return resource.DelPodAnnotation(ctx, p.K8sClient, podName, jfsConfig.Namespace, []string{key})
+	})
+	if err != nil {
+		log.Error(err, "Remove ref of target err", "target", target)
+		return err
+	}
 	return nil
 }
 
 func (p *PodMount) JUmount(ctx context.Context, target, podName string) error {
 	log := util.GenLog(ctx, p.log, "JUmount")
-	key := util.GetReferenceKey(target)
-	log.Info("Delete target ref and check mount pod is need to delete or not.", "target", target, "podName", podName, "key", key)
 	err := retry.RetryOnConflict(retry.DefaultBackoff, func() error {
 		po, err := p.K8sClient.GetPod(ctx, podName, jfsConfig.Namespace)
 		if err != nil {
@@ -168,17 +195,11 @@ func (p *PodMount) JUmount(ctx context.Context, target, podName string) error {
 			return err
 		}
 
-		if _, ok := po.Annotations[key]; ok {
-			if err := resource.DelPodAnnotation(ctx, p.K8sClient, podName, jfsConfig.Namespace, []string{key}); err != nil {
-				log.Error(err, "Remove pod annotation error", "podName", podName, "key", key)
-				return err
-			}
-			delete(po.Annotations, key)
-		}
 		if GetRef(po) != 0 {
 			log.Info("pod still has juicefs- refs.", "podName", podName)
 			return nil
 		}
+
 		var shouldDelay bool
 		shouldDelay, err = resource.ShouldDelay(ctx, po, p.K8sClient)
 		if err != nil {
@@ -193,7 +214,7 @@ func (p *PodMount) JUmount(ctx context.Context, target, podName string) error {
 			}
 
 			// close socket
-			if util.SupportFusePass(po) {
+			if util.SupportFusePass(po.Spec.Containers[0].Image) {
 				passfd.GlobalFds.StopFd(ctx, po)
 			}
 
@@ -294,20 +315,7 @@ func (p *PodMount) genMountPodName(ctx context.Context, jfsSetting *jfsConfig.Jf
 		if pod.Spec.NodeName != jfsConfig.NodeName && pod.Spec.NodeSelector["kubernetes.io/hostname"] != jfsConfig.NodeName {
 			continue
 		}
-		hashMismatch := po.Labels[common.PodJuiceHashLabelKey] != jfsSetting.HashVal
-		beingDeleted := po.DeletionTimestamp != nil
-		podComplete := resource.IsPodComplete(&po)
-
-		if hashMismatch || beingDeleted || podComplete {
-			if hashMismatch {
-				log.V(1).Info("reuse pod check: skipping pod due to hash mismatch", "podName", pod.Name, "expectedHash", jfsSetting.HashVal, "actualHash", po.Labels[common.PodJuiceHashLabelKey])
-			}
-			if beingDeleted {
-				log.V(1).Info("reuse pod check: skipping pod due to deletion in progress", "podName", pod.Name, "deletionTimestamp", po.DeletionTimestamp)
-			}
-			if podComplete {
-				log.V(1).Info("reuse pod check: skipping pod due to completion status", "podName", pod.Name)
-			}
+		if po.Labels[common.PodJuiceHashLabelKey] != jfsSetting.HashVal || po.DeletionTimestamp != nil || resource.IsPodComplete(&po) {
 			for k, v := range po.Annotations {
 				if v == jfsSetting.TargetPath {
 					log.Info("Found pod with same target path, delete the reference", "podName", pod.Name, "targetPath", jfsSetting.TargetPath)
@@ -321,7 +329,6 @@ func (p *PodMount) genMountPodName(ctx context.Context, jfsSetting *jfsConfig.Jf
 		podName = pod.Name
 	}
 	if podName != "" {
-		log.V(1).Info("reuse pod found", "podName", podName, "uniqueId", jfsSetting.UniqueId, "hashVal", jfsSetting.HashVal)
 		return podName, nil
 	}
 	return GenPodNameByUniqueId(jfsSetting.UniqueId, true), nil
@@ -381,7 +388,7 @@ func (p *PodMount) createOrAddRef(ctx context.Context, podName string, jfsSettin
 							} else {
 								newPod.Spec.Affinity = appPod.Spec.Affinity
 								newPod.Spec.SchedulerName = appPod.Spec.SchedulerName
-								newPod.Spec.Tolerations = util.CopySlice(appPod.Spec.Tolerations)
+								newPod.Spec.Tolerations = appPod.Spec.Tolerations
 							}
 						}
 					}
@@ -391,21 +398,16 @@ func (p *PodMount) createOrAddRef(ctx context.Context, podName string, jfsSettin
 					return err
 				}
 
-				supportFusePass := util.SupportFusePass(newPod)
-				if supportFusePass {
+				if util.SupportFusePass(jfsSetting.Attr.Image) {
 					if err := passfd.GlobalFds.ServeFuseFd(ctx, newPod); err != nil {
 						log.Error(err, "serve fuse fd error", "podName", podName)
 					}
-				} else {
-					log.Info("mount pod cannot be smoothly upgraded. do not serve the FUSE fd.", "podName", podName)
 				}
 
 				_, err = p.K8sClient.CreatePod(ctx, newPod)
 				if err != nil {
 					log.Error(err, "Create pod err, stop fuse fd server", "podName", podName)
-					if supportFusePass {
-						passfd.GlobalFds.StopFd(ctx, newPod)
-					}
+					passfd.GlobalFds.StopFd(ctx, newPod)
 				}
 				return err
 			} else if k8serrors.IsTimeout(err) {
@@ -444,7 +446,7 @@ func (p *PodMount) waitUtilMountReady(ctx context.Context, jfsSetting *jfsConfig
 	log, err := p.getErrContainerLog(ctx, podName)
 	if err != nil {
 		logger.Error(err, "Get pod log error", "podName", podName)
-		return fmt.Errorf("mount %v at %v failed: mount isn't ready in 60 seconds", util.StripPasswd(jfsSetting.Source), jfsSetting.MountPath)
+		return fmt.Errorf("mount %v at %v failed: mount isn't ready in 30 seconds", util.StripPasswd(jfsSetting.Source), jfsSetting.MountPath)
 	}
 	return fmt.Errorf("mount %v at %v failed, mountpod: %s, failed log: %v", util.StripPasswd(jfsSetting.Source), jfsSetting.MountPath, podName, log)
 }

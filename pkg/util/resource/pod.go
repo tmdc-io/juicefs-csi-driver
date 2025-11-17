@@ -53,7 +53,6 @@ func IsPodReady(pod *corev1.Pod) bool {
 func containError(statuses []corev1.ContainerStatus) bool {
 	for _, status := range statuses {
 		if (status.State.Waiting != nil && status.State.Waiting.Reason != "ContainerCreating") ||
-			(status.State.Terminated != nil && status.State.Terminated.Reason == "OOMKilled") ||
 			(status.State.Terminated != nil && status.State.Terminated.ExitCode != 0) {
 			return true
 		}
@@ -295,11 +294,6 @@ func ShouldDelay(ctx context.Context, pod *corev1.Pod, Client *k8s.K8sClient) (s
 			resourceLog.Error(err, "delayDelete: can't parse delay time", "time", d)
 			return false, nil
 		}
-		delayAt, _ := util.GetTime(d)
-		if !time.Now().Before(delayAt) {
-			resourceLog.V(1).Info("delayDelete: computed delay time already passed, skip adding annotation", "time", d, "podName", pod.Name)
-			return false, nil
-		}
 		addAnnotation := map[string]string{common.DeleteDelayAtKey: d}
 		resourceLog.Info("delayDelete: add annotation to pod", "annotations", addAnnotation, "podName", pod.Name)
 		if err := AddPodAnnotation(ctx, Client, pod.Name, pod.Namespace, addAnnotation); err != nil {
@@ -534,7 +528,7 @@ func CanUpgrade(pod corev1.Pod, recreate bool) (bool, string, error) {
 	if !recreate && !util.ImageSupportBinary(pod.Spec.Containers[0].Image) {
 		return false, fmt.Sprintf("image %s do not support smooth binary upgrade", pod.Spec.Containers[0].Image), nil
 	}
-	if recreate && !util.SupportFusePass(&pod) {
+	if recreate && !util.SupportFusePass(pod.Spec.Containers[0].Image) {
 		return false, fmt.Sprintf("image %s do not support recreate smooth upgrade", pod.Spec.Containers[0].Image), nil
 	}
 

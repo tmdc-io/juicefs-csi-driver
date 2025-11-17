@@ -27,7 +27,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/juicedata/juicefs-csi-driver/pkg/util"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	appsv1 "k8s.io/api/apps/v1"
@@ -43,15 +42,10 @@ import (
 	"k8s.io/client-go/rest"
 	restclient "k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/remotecommand"
-	"k8s.io/klog/v2"
 )
 
 const (
 	timeout = 10 * time.Second
-)
-
-var (
-	clientLog = klog.NewKlogr().WithName("client")
 )
 
 type PatchListValue struct {
@@ -85,7 +79,6 @@ type PatchDelValue struct {
 
 type K8sClient struct {
 	enableAPIServerListCache bool
-	RestConfig               *rest.Config
 	kubernetes.Interface
 }
 
@@ -131,22 +124,12 @@ func newClient(config rest.Config) (*K8sClient, error) {
 	if os.Getenv("ENABLE_APISERVER_LIST_CACHE") == "true" {
 		enableAPIServerListCache = true
 	}
-	return &K8sClient{enableAPIServerListCache, &config, client}, nil
+	return &K8sClient{enableAPIServerListCache, client}, nil
 }
 
 func (k *K8sClient) CreatePod(ctx context.Context, pod *corev1.Pod) (*corev1.Pod, error) {
 	if pod == nil {
 		return nil, nil
-	}
-	// fix: https://github.com/juicedata/juicefs-csi-driver/issues/1296
-	// clean up pod.spec.tolerations keys
-	// It is not known where the symbol of the anomaly comes from, so let's clean it up here first.
-	for i := range pod.Spec.Tolerations {
-		toleration := &pod.Spec.Tolerations[i]
-		if strings.Contains(toleration.Key, "\x00") {
-			clientLog.Info("toleration key has invalid characters, will be trimmed", "key", toleration.Key)
-			toleration.Key = util.RemoveIllegalChars(toleration.Key)
-		}
 	}
 	mntPod, err := k.CoreV1().Pods(pod.Namespace).Create(ctx, pod, metav1.CreateOptions{})
 	if err != nil {
@@ -353,6 +336,7 @@ func (k *K8sClient) ListPersistentVolumesByVolumeHandle(ctx context.Context, vol
 	}
 	var result []corev1.PersistentVolume
 	for _, pv := range pvs {
+		pv := pv
 		if pv.Spec.CSI != nil && pv.Spec.CSI.VolumeHandle == volumeHandle {
 			result = append(result, pv)
 		}

@@ -291,17 +291,6 @@ func (s *SidecarMutate) injectVolume(pod *corev1.Pod, build builder.SidecarInter
 					}
 				}
 			}
-			if s.supportsNativeSidecar {
-				for cni, cn := range pod.Spec.InitContainers {
-					for j, vm := range cn.VolumeMounts {
-						// overwrite initContainers volumeMount
-						if vm.Name == volume.Name {
-							build.OverwriteVolumeMounts(&vm)
-							pod.Spec.InitContainers[cni].VolumeMounts[j] = vm
-						}
-					}
-				}
-			}
 		}
 	}
 	// inject volume

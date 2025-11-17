@@ -93,8 +93,6 @@ type JfsSetting struct {
 
 	PV  *corev1.PersistentVolume      `json:"-"`
 	PVC *corev1.PersistentVolumeClaim `json:"-"`
-
-	MountShareMode string `json:"-"`
 }
 
 func (s *JfsSetting) String() string {
@@ -159,8 +157,6 @@ type PodAttr struct {
 	VolumeMounts                  []corev1.VolumeMount  `json:"volumeMounts,omitempty"`
 	Env                           []corev1.EnvVar       `json:"env,omitempty"`
 	CacheDirs                     []MountPatchCacheDir  `json:"cacheDirs,omitempty"`
-	InitContainers                []corev1.Container    `json:"initContainers,omitempty"`
-	HostnameKey                   string                `json:"-"`
 
 	// inherit from csi
 	Image            string
@@ -309,7 +305,7 @@ func ParseSetting(ctx context.Context, secrets, volCtx map[string]string, option
 		}
 	}
 
-	if err := GenPodAttrWithCfg(&jfsSetting, volCtx, false); err != nil {
+	if err := GenPodAttrWithCfg(&jfsSetting, volCtx); err != nil {
 		return nil, fmt.Errorf("GenPodAttrWithCfg error: %v", err)
 	}
 	if err := genAndValidOptions(&jfsSetting); err != nil {
@@ -328,11 +324,6 @@ func ParseSetting(ctx context.Context, secrets, volCtx map[string]string, option
 	}
 	if err := jfsSetting.genFormatCmd(secrets); err != nil {
 		return nil, err
-	}
-	if StorageClassShareMount {
-		jfsSetting.MountShareMode = "storageClassShareMount"
-	} else if FSShareMount {
-		jfsSetting.MountShareMode = "fsShareMount"
 	}
 	return &jfsSetting, nil
 }
@@ -512,7 +503,7 @@ func genAndValidOptions(JfsSetting *JfsSetting) error {
 	return nil
 }
 
-func GenPodAttrWithCfg(setting *JfsSetting, volCtx map[string]string, replaceTemplate bool) error {
+func GenPodAttrWithCfg(setting *JfsSetting, volCtx map[string]string) error {
 	var err error
 	var attr *PodAttr
 	if setting.Attr != nil {
@@ -527,10 +518,10 @@ func GenPodAttrWithCfg(setting *JfsSetting, volCtx map[string]string, replaceTem
 			HostAliases:          CSIPod.Spec.HostAliases,
 			HostPID:              CSIPod.Spec.HostPID,
 			HostIPC:              CSIPod.Spec.HostIPC,
-			DNSConfig:            CSIPod.Spec.DNSConfig.DeepCopy(),
+			DNSConfig:            CSIPod.Spec.DNSConfig,
 			DNSPolicy:            CSIPod.Spec.DNSPolicy,
-			ImagePullSecrets:     util.CopySlice(CSIPod.Spec.ImagePullSecrets),
-			Tolerations:          util.CopySlice(CSIPod.Spec.Tolerations),
+			ImagePullSecrets:     CSIPod.Spec.ImagePullSecrets,
+			Tolerations:          CSIPod.Spec.Tolerations,
 			PreemptionPolicy:     CSIPod.Spec.PreemptionPolicy,
 			ServiceAccountName:   CSIPod.Spec.ServiceAccountName,
 			Resources:            getDefaultResource(),
@@ -586,7 +577,7 @@ func GenPodAttrWithCfg(setting *JfsSetting, volCtx map[string]string, replaceTem
 	}
 	setting.Attr = attr
 	// apply config patch
-	applyConfigPatch(setting, replaceTemplate)
+	applyConfigPatch(setting)
 
 	return nil
 }
@@ -603,7 +594,7 @@ func GenSettingAttrWithMountPod(ctx context.Context, client *k8sclient.K8sClient
 	// in `STORAGE_CLASS_SHARE_MOUNT` mode, the uniqueId is the storageClass name
 	// parse mountpod ref annotation to get the real pv name
 	// maybe has multiple pv, we need to get the first one
-	if StorageClassShareMount || FSShareMount {
+	if StorageClassShareMount {
 		for _, target := range mountPod.Annotations {
 			if v := getPVNameFromTarget(target); v != "" {
 				pvName = v
@@ -648,9 +639,6 @@ func GenSettingAttrWithMountPod(ctx context.Context, client *k8sclient.K8sClient
 	}
 	if err = setting.ReNew(mountPod, pvc, pv, custSecret); err != nil {
 		return nil, err
-	}
-	if v, ok := mountPod.Annotations[common.JuicefsMountShareMode]; ok && v != "" {
-		setting.MountShareMode = v
 	}
 	return setting, nil
 }
@@ -719,8 +707,8 @@ func RevertSetting(mountPod *corev1.Pod, pvc *corev1.PersistentVolumeClaim, pv *
 		HostIPC:              mountPod.Spec.HostIPC,
 		DNSConfig:            mountPod.Spec.DNSConfig,
 		DNSPolicy:            mountPod.Spec.DNSPolicy,
-		ImagePullSecrets:     util.CopySlice(mountPod.Spec.ImagePullSecrets),
-		Tolerations:          util.CopySlice(mountPod.Spec.Tolerations),
+		ImagePullSecrets:     mountPod.Spec.ImagePullSecrets,
+		Tolerations:          mountPod.Spec.Tolerations,
 		PreemptionPolicy:     mountPod.Spec.PreemptionPolicy,
 		ServiceAccountName:   mountPod.Spec.ServiceAccountName,
 		Labels:               make(map[string]string),
@@ -853,8 +841,8 @@ func (s *JfsSetting) ReNew(mountPod *corev1.Pod, pvc *corev1.PersistentVolumeCla
 	if err != nil {
 		return err
 	}
-	// apply config without replace template to calculate hash
-	applyConfigPatch(s, false)
+	// apply config patch
+	applyConfigPatch(s)
 	s.ClientConfPath = DefaultClientConfPath
 	if err := GenCacheDirs(s, nil); err != nil {
 		return err
@@ -1073,10 +1061,10 @@ func processOption(option string, resources corev1.ResourceRequirements) string 
 	return option
 }
 
-func applyConfigPatch(setting *JfsSetting, replaceTemplate bool) {
+func applyConfigPatch(setting *JfsSetting) {
 	attr := setting.Attr
 	// overwrite by mountpod patch
-	patch := GlobalConfig.GenMountPodPatch(*setting, replaceTemplate)
+	patch := GlobalConfig.GenMountPodPatch(*setting)
 	if patch.Image != "" {
 		attr.Image = patch.Image
 	}
@@ -1095,19 +1083,15 @@ func applyConfigPatch(setting *JfsSetting, replaceTemplate bool) {
 	if patch.Resources != nil {
 		attr.Resources = *patch.Resources
 	}
-	if patch.HostnameKey != "" {
-		attr.HostnameKey = patch.HostnameKey
-	}
-	attr.Lifecycle = patch.Lifecycle
-	attr.LivenessProbe = patch.LivenessProbe
-	attr.ReadinessProbe = patch.ReadinessProbe
-	attr.StartupProbe = patch.StartupProbe
-	attr.TerminationGracePeriodSeconds = patch.TerminationGracePeriodSeconds
+	attr.Lifecycle = util.CpNotNil(patch.Lifecycle, attr.Lifecycle)
+	attr.LivenessProbe = util.CpNotNil(patch.LivenessProbe, attr.LivenessProbe)
+	attr.ReadinessProbe = util.CpNotNil(patch.ReadinessProbe, attr.ReadinessProbe)
+	attr.StartupProbe = util.CpNotNil(patch.StartupProbe, attr.StartupProbe)
+	attr.TerminationGracePeriodSeconds = util.CpNotNil(patch.TerminationGracePeriodSeconds, attr.TerminationGracePeriodSeconds)
 	attr.VolumeDevices = patch.VolumeDevices
 	attr.VolumeMounts = patch.VolumeMounts
 	attr.Volumes = patch.Volumes
 	attr.Env = patch.Env
-	attr.InitContainers = patch.InitContainers
 	attr.CacheDirs = patch.CacheDirs
 
 	newOptions := make([]string, 0)
@@ -1214,9 +1198,6 @@ func GenHashOfSetting(log klog.Logger, setting JfsSetting) string {
 		})
 		util.SortBy(s.Attr.HostAliases, func(i, j int) bool {
 			return strings.Compare(s.Attr.HostAliases[i].IP, s.Attr.HostAliases[j].IP) < 0
-		})
-		util.SortBy(s.Attr.InitContainers, func(i, j int) bool {
-			return strings.Compare(s.Attr.InitContainers[i].Name, s.Attr.InitContainers[j].Name) < 0
 		})
 	}
 

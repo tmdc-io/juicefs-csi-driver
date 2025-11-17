@@ -9,7 +9,7 @@ Kubernetes 的一大好处就是促进资源充分利用，在 JuiceFS CSI 驱�
 
 每一个使用着 JuiceFS PV 的容器，都对应着一个 Mount Pod（会智能匹配和复用），因此为 Mount Pod 配置合理的资源声明，将是最有效的优化资源占用的手段。关于配置资源请求（`request`）和约束（`limit`），可以详读 [Kubernetes 官方文档](https://kubernetes.io/zh-cn/docs/concepts/configuration/manage-resources-containers)，此处不赘述。
 
-JuiceFS Mount Pod 的 `requests` 默认为 1 CPU 和 1GiB Memory，`limits` 默认为 2 CPU 和 5GiB Memory。考虑到 JuiceFS 的使用场景多种多样，1C1G 的资源请求可能不一定适合你的集群，比方说：
+JuiceFS Mount Pod 的 `requests` 默认为 1 CPU 和 1GiB Memory，`limits` 默认为 5 CPU 和 5GiB Memory。考虑到 JuiceFS 的使用场景多种多样，1C1G 的资源请求可能不一定适合你的集群，比方说：
 
 * 实际场景下用量极低，比如 Mount Pod 只使用了 0.1 CPU、100MiB Memory，那么你应该尊重实际监控数据，将资源请求调整为 0.1 CPU，100MiB Memory，避免过大的 `requests` 造成资源闲置，甚至导致容器拒绝启动，或者抢占其他应用容器（Preemption）。对于 `limits`，你也可以根据实际监控数据，调整为一个大于 `requests` 的数值，允许突发瞬时的资源占用上升；
 * 实际场景下用量更高，比方说 2 CPU、2GiB 内存，此时虽然 1C1G 的默认 `requests` 允许容器调度到节点上，但实际资源占用高于 `requests`，这便是「资源超售」（Overcommitment），严重的超售会影响集群稳定性，让节点出现各种资源挤占的问题，比如 CPU Throttle、OOM。因此这种情况下，你也应该根据实际用量，调整 `requests` 和 `limits`；
@@ -245,10 +245,6 @@ CSI Node 在创建 Mount Pod 时，会默认给其设置 PriorityClass 为 `syst
 
 ## 为相同的 StorageClass 复用 Mount Pod {#share-mount-pod-for-the-same-storageclass}
 
-:::note
-使用静态 PV 时，该方法不可用。
-:::
-
 默认情况下，仅在多个应用 Pod 使用相同 PV 时，Mount Pod 才会被复用。如果你希望进一步降低开销，可以更加激进地复用 Mount Pod，让使用相同 StorageClass 创建出来的所有 PV，都复用同一个 Mount Pod（当然了，复用只能发生在同一个节点）。不同的应用 Pod，将会绑定挂载点下不同的路径，实现一个挂载点为多个应用容器提供服务。
 
 为相同 StorageClass PV 复用 Mount Pod，需要为 CSI Node Service 添加 `STORAGE_CLASS_SHARE_MOUNT` 这个环境变量：
@@ -257,43 +253,7 @@ CSI Node 在创建 Mount Pod 时，会默认给其设置 PriorityClass 为 `syst
 kubectl -n kube-system set env -c juicefs-plugin daemonset/juicefs-csi-node STORAGE_CLASS_SHARE_MOUNT=true
 ```
 
-或者采用 Helm 安装时，在 `values.yaml` 中添加如下配置：
-
-```yaml title="values.yaml"
-node:
-  # When set true, enable application pods using same sc share the same mount pod
-  storageClassShareMount: true
-```
-
 可想而知，高度复用意味着更低的隔离程度，如果 Mount Pod 发生意外，挂载点异常，影响面也会更大，因此如果你决定启用该复用策略，请务必同时启用[「挂载点自动恢复」](./configurations.md#automatic-mount-point-recovery)，以及合理增加 [「Mount Pod 的资源请求」](#mount-pod-resources)。
-
-## 为相同的 File System 复用 Mount Pod <VersionAdd>0.30.0</VersionAdd> {#share-mount-pod-for-the-same-file-system}
-
-StorageClass 复用的粒度是 StorageClass，如果你有多个 StorageClass 指向同一个 JuiceFS 文件系统，或者使用静态 PV，那么它们会创建出不同的 Mount Pod。
-
-如果你希望更进一步降低开销，可以让使用相同 JuiceFS 文件系统的所有 PV，都复用同一个 Mount Pod（当然了，复用只能发生在同一个节点）。
-
-为相同 File System PV 复用 Mount Pod，需要为 CSI Node Service 添加 `FS_SHARE_MOUNT` 这个环境变量：
-
-```shell
-kubectl -n kube-system set env -c juicefs-plugin daemonset/juicefs-csi-node FS_SHARE_MOUNT=true
-```
-
-或者才用 Helm 安装时，在 `values.yaml` 中添加如下配置：
-
-```yaml title="values.yaml"
-node:
-  fsShareMount: true
-```
-
-:::note
-当同一个文件系统中的配置不同时，则可能不会被复用，比如：
-
-- 不同的挂载参数（Mount Options）。
-- 社区版中多个 meta 对应多个同名的文件系统。则会 fallback 到基于 PV 的复用。
-- 私有部署场景中有多个集群，但是文件名称相同的文件系统。则会 fallback 到基于 PV 的复用。
-
-:::
 
 ## 配置 Mount Pod 退出时清理缓存 {#clean-cache-when-mount-pod-exits}
 

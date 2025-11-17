@@ -23,7 +23,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
 	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
@@ -55,7 +54,7 @@ func (m *PVController) Reconcile(ctx context.Context, request reconcile.Request)
 	pv, err := m.GetPersistentVolume(ctx, request.Name)
 	if err != nil {
 		pvCtrlLog.Error(err, "Failed to get pv", "name", request.Name)
-		return reconcile.Result{}, client.IgnoreNotFound(err)
+		return reconcile.Result{}, err
 	}
 	if pv.Spec.CSI != nil && pv.Spec.CSI.NodePublishSecretRef != nil {
 		secretName := pv.Spec.CSI.NodePublishSecretRef.Name

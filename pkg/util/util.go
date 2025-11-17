@@ -36,7 +36,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/juicedata/juicefs-csi-driver/pkg/common"
 	"github.com/prometheus/client_golang/prometheus"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
@@ -365,23 +364,6 @@ func UmountPath(ctx context.Context, sourcePath string, lazy bool) error {
 	return err
 }
 
-func GetMountPathOfSidecar(pod corev1.Pod, containerName string) (string, string, error) {
-	if pod.Labels[common.InjectSidecarDone] != "true" {
-		return "", "", fmt.Errorf("pod %v has no sidecar", pod.Name)
-	}
-	containers := pod.Spec.InitContainers
-	containers = append(containers, pod.Spec.Containers...)
-	for _, container := range containers {
-		if container.Name == containerName {
-			if len(container.Command) < 3 {
-				return "", "", fmt.Errorf("get error sidecar command:%v", container.Command)
-			}
-			return parseMntPath(container.Command[2])
-		}
-	}
-	return "", "", fmt.Errorf("pod %v has no mount sidecar", pod.Name)
-}
-
 func GetMountPathOfPod(pod corev1.Pod) (string, string, error) {
 	if len(pod.Spec.Containers) == 0 {
 		return "", "", fmt.Errorf("pod %v has no container", pod.Name)
@@ -628,43 +610,7 @@ func SupportUpgradeBinary(ce bool, version string) bool {
 	return supportUpgradeBinary(v)
 }
 
-func SupportQuotaPathCreate(ce bool, version string) bool {
-	if version == "" || strings.Contains(version, "nightly") {
-		return true
-	}
-	v := parseClientVersion(ce, version)
-	if ce {
-		return !v.LessThan(ClientVersion{IsCe: true, Major: 1, Minor: 3, Patch: 0})
-	}
-	return !v.LessThan(ClientVersion{IsCe: false, Major: 5, Minor: 2, Patch: 0})
-}
-
-func SupportConfigEncrypt(image string) bool {
-	if image == "" || strings.Contains(image, "nightly") {
-		return true
-	}
-	v := parseClientVersionFromImage(image)
-	return !v.LessThan(ClientVersion{IsCe: false, Major: 5, Minor: 1, Patch: 0})
-}
-
-func SupportFusePass(pod *corev1.Pod) bool {
-	if pod == nil {
-		return false
-	}
-	if len(pod.Spec.Containers) == 0 {
-		return false
-	}
-
-	if pod.Spec.Containers[0].Lifecycle != nil && pod.Spec.Containers[0].Lifecycle.PreStop != nil && pod.Spec.Containers[0].Lifecycle.PreStop.Exec != nil {
-		prestopCmd := pod.Spec.Containers[0].Lifecycle.PreStop.Exec.Command
-		for _, cmd := range prestopCmd {
-			if strings.Contains(cmd, "umount") {
-				return false
-			}
-		}
-	}
-
-	image := pod.Spec.Containers[0].Image
+func SupportFusePass(image string) bool {
 	v := parseClientVersionFromImage(image)
 	if v.Nightly {
 		return true
@@ -848,68 +794,4 @@ func DeDuplicate(target []string) []string {
 		}
 	}
 	return result
-}
-
-func ParseSubdirFromMountOptions(mountOptions []string) string {
-	for _, option := range mountOptions {
-		if strings.HasPrefix(option, "subdir=") {
-			parts := strings.SplitN(option, "=", 2)
-			if len(parts) == 2 {
-				return parts[1]
-			}
-		}
-	}
-	return ""
-}
-
-func IsConfigEncrypted(initconfig string) bool {
-	if initconfig == "" {
-		return false
-	}
-
-	config := map[string]interface{}{}
-	if err := json.Unmarshal([]byte(initconfig), &config); err != nil {
-		utilLog.Error(err, "IsConfigEncrypted: json.Unmarshal failed", "config", config)
-		return false
-	}
-	if v, ok := config["encryptkeys"]; ok {
-		if encrypt, ok := v.(bool); ok {
-			return encrypt
-		}
-		utilLog.Error(nil, "IsConfigEncrypted: config[encryptkeys] is not a bool", "config", config)
-		return false
-	}
-	return false
-}
-
-func CopySlice[T any](src []T) []T {
-	if len(src) == 0 {
-		return nil
-	}
-	newSlice := make([]T, len(src))
-	copy(newSlice, src)
-	return newSlice
-}
-
-var (
-	reNonPrintable = regexp.MustCompile(`[^\x20-\x7E]`)
-	reEscapedNull  = regexp.MustCompile(`\\x[0-9a-fA-F]{2}`)
-)
-
-func RemoveIllegalChars(s string) string {
-	s = reEscapedNull.ReplaceAllString(s, "")
-	// Remove all non-printable characters
-	return strings.TrimSpace(reNonPrintable.ReplaceAllString(s, ""))
-}
-
-func EnsureSnapshotHandle(snapshotId, sourceVolumeId string) string {
-	return fmt.Sprintf("%s|%s", snapshotId, sourceVolumeId)
-}
-
-func ParseSnapshotHandle(snapshotHandle string) (snapshotId string, sourceVolumeId string, err error) {
-	parts := strings.SplitN(snapshotHandle, "|", 2)
-	if len(parts) != 2 {
-		return "", "", fmt.Errorf("invalid snapshot ID format: %s, expected format: snapshot-uid|source-volume-id", snapshotHandle)
-	}
-	return parts[0], parts[1], nil
 }

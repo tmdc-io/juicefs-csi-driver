@@ -20,7 +20,7 @@ Although in the examples below, secrets are usually named `juicefs-secret`, they
 
 :::
 
-### Community Edition {#community-edition}
+### Community edition {#community-edition}
 
 Create Kubernetes Secret:
 
@@ -37,34 +37,29 @@ type: Opaque
 stringData:
   name: <JUICEFS_NAME>
   metaurl: <META_URL>
-  # If the file system has already been formatted and you don't want to format it again in the pod, 
-  # you can leave the `storage` and `bucket` parameters blank.
   storage: s3
   bucket: https://<BUCKET>.s3.<REGION>.amazonaws.com
   access-key: <ACCESS_KEY>
   secret-key: <SECRET_KEY>
-  # Inject environment variables, e.g. timezone (UTC by default), or encryption paraphrase
-  # envs: "{TZ: Asia/Shanghai, JFS_RSA_PASSPHRASE: xxx}"
-  # Options for juicefs format
+  # Adjust Mount Pod timezone, defaults to UTC.
+  # envs: "{TZ: Asia/Shanghai}"
+  # If you need to format a volume within the mount Pod, fill in format options below.
   # format-options: trash-days=1,block-size=4096
-  # If encryption is enabled for the file system, the RSA private key needs to be included as well
-  # encrypt_rsa_key: xxx
 ```
 
 Fields description:
 
-- `name`: The JuiceFS file system name.
-- `metaurl`: Connection URL for metadata engine. Read [Set Up Metadata Engine](https://juicefs.com/docs/community/databases_for_metadata) for details.
+- `name`: The JuiceFS file system name
+- `metaurl`: Connection URL for metadata engine. Read [Set Up Metadata Engine](https://juicefs.com/docs/community/databases_for_metadata) for details
 - `storage`: Object storage type, such as `s3`, `gs`, `oss`. Read [Set Up Object Storage](https://juicefs.com/docs/community/how_to_setup_object_storage) for the full supported list
-- `bucket`: Bucket URL. Read [Set Up Object Storage](https://juicefs.com/docs/community/how_to_setup_object_storage) to learn how to setup different object storage.
-- `access-key`/`secret-key`: Object storage credentials, these options can also be specified under the `format-options` field, with higher priority.
-- `envs`：Mount Pod environment variables, in JSON or YAML format (the above code snippet is inline YAML). If encryption is enabled for the file system, refer to [this section](../security/encryption.md).
-- `format-options`: For Community Edition, this field stands for options used in [`juicefs format`](https://juicefs.com/docs/community/command_reference#format).
-- `encrypt_rsa_key`: The RSA private key used in file system encryption, see [encryption](../security/encryption.md) for more.
+- `bucket`: Bucket URL. Read [Set Up Object Storage](https://juicefs.com/docs/community/how_to_setup_object_storage) to learn how to setup different object storage
+- `access-key`/`secret-key`: Object storage credentials
+- `envs`：Mount Pod environment variables
+- `format-options`: Options used when creating a JuiceFS volume, see [`juicefs format`](https://juicefs.com/docs/community/command_reference#format). This options is only available in v0.13.3 and above
 
 Information like `access-key` can be specified both as a Secret `stringData` field, and inside `format-options`. If provided in both places, `format-options` will take precedence.
 
-### Enterprise Edition (Cloud Service) {#cloud-service}
+### Cloud service {#cloud-service}
 
 Before continue, you should have already [created a file system](https://juicefs.com/docs/cloud/getting_started#create-file-system).
 
@@ -85,26 +80,25 @@ stringData:
   token: ${JUICEFS_TOKEN}
   access-key: ${ACCESS_KEY}
   secret-key: ${SECRET_KEY}
-  # Inject environment variables, e.g. timezone (UTC by default), or encryption paraphrase
-  # envs: "{TZ: Asia/Shanghai, JFS_RSA_PASSPHRASE: xxx}"
-  # Options for juicefs auth
+  # Adjust Mount Pod timezone, defaults to UTC.
+  # envs: "{TZ: Asia/Shanghai}"
+  # If you need to specify more authentication options, fill in juicefs auth parameters below.
   # format-options: bucket2=xxx,access-key2=xxx,secret-key2=xxx
-  # If encryption is enabled for the file system, the RSA private key needs to be included as well
-  # encrypt_rsa_key: xxx
 ```
 
 Fields description:
 
-- `name`: The JuiceFS file system name.
-- `token`: Token used to authenticate against JuiceFS Volume, see [Access token](https://juicefs.com/docs/cloud/acl#access-token).
-- `access-key`/`secret-key`: Object storage credentials, these options can also be specified under the `format-options` field, with higher priority.
-- `envs`：Mount Pod environment variables, in JSON or YAML format (the above code snippet is inline YAML). If encryption is enabled for the file system, refer to [this section](../security/encryption.md).
-- `format-options`: For Enterprise Edition, unintuitively, this field actually stands for options used by the [`juicefs auth`](https://juicefs.com/docs/cloud/commands_reference#auth) command, the reason being that, the `juicefs auth` command is somewhat similar to the `juicefs format` in JuiceFS Community Edition, thus CSI Driver uses `format-options` for both scenarios, read [Format options / auth options](./configurations.md#format-options) for more.
-- `encrypt_rsa_key`: The RSA private key used in file system encryption, see [encryption](../security/encryption.md) for more
+- `name`: The JuiceFS file system name
+- `token`: Token used to authenticate against JuiceFS Volume, see [Access token](https://juicefs.com/docs/cloud/acl#access-token)
+- `access-key`/`secret-key`: Object storage credentials
+- `envs`：Mount Pod environment variables
+- `format-options`: Options used by the [`juicefs auth`](https://juicefs.com/docs/cloud/commands_reference#auth) command, this command deals with authentication and generate local mount configuration. This options is only available in v0.13.3 and above
 
 Information like `access-key` can be specified both as a Secret `stringData` field, and inside `format-options`. If provided in both places, `format-options` will take precedence.
 
-### Enterprise Edition (on-premises) {#enterprise-edition}
+For Cloud Service, the `juicefs auth` command is somewhat similar to the `juicefs format` in JuiceFS Community Edition, thus CSI Driver uses `format-options` for both scenarios, read [Format options / auth options](./configurations.md#format-options) for more.
+
+### Enterprise edition (on-premises) {#enterprise-edition}
 
 The JuiceFS Web Console is in charge of client authentication and distributing configuration files. In an on-premises deployment, the console address won't be [https://juicefs.com/console](https://juicefs.com/console), so it's required to specify the address for JuiceFS Web Console through `envs` field in volume credentials.
 
@@ -123,28 +117,22 @@ stringData:
   token: ${JUICEFS_TOKEN}
   access-key: ${ACCESS_KEY}
   secret-key: ${SECRET_KEY}
-  # On-prem environments must specify the Web Console URL in the Mount Pod environment variable, replace the example address with the actual on-prem web console URL
-  # Apart from this, you can also put other variables in the envs field, see code snippet in the last section for more
+  # Replace the example address with the actual on-prem web console URL
   envs: '{"BASE_URL": "http://console.example.com/static"}'
-  # If you need to specify more authentication options, fill in juicefs auth parameters below
+  # If you need to specify more authentication options, fill in juicefs auth parameters below.
   # format-options: bucket2=xxx,access-key2=xxx,secret-key2=xxx
-  # If encryption is enabled for the file system, you might need to add the JFS_RSA_PASSPHRASE environment variable in the envs field, and also include the RSA private key in the encrypt_rsa_key field, read the code snippet in the last section for more
-  # encrypt_rsa_key: xxx
 ```
 
 Fields description:
 
-- `name`: The JuiceFS file system name.
-- `token`: Token used to authenticate against JuiceFS Volume, see [Access token](https://juicefs.com/docs/cloud/acl#access-token).
-- `access-key`/`secret-key`: Object storage credentials, these options can also be specified under the `format-options` field, with higher priority.
+- `name`: The JuiceFS file system name
+- `token`: Token used to authenticate against JuiceFS Volume, see [Access token](https://juicefs.com/docs/cloud/acl#access-token)
+- `access-key`/`secret-key`: Object storage credentials
 - `envs`：Mount Pod environment variables, in an on-prem environment, you need to specify the web console address via `BASE_URL`, if you do not know where to get it, navigate to the "Settings" page from our console, and then use the "Console Access URL":
 
   ![on-prem-console-url](../images/on-prem-console-url-en.png)
 
-  The content should be written in JSON or YAML format (the above code snippet is inline YAML). If encryption is enabled for the file system, `JFS_RSA_PASSPHRASE` might be required, refer to [this section](../security/encryption.md) for more.
-
-- `format-options`: For Enterprise Edition, unintuitively, this field actually stands for options used by the [`juicefs auth`](https://juicefs.com/docs/cloud/commands_reference#auth) command, the reason being that, the `juicefs auth` command is somewhat similar to the `juicefs format` in JuiceFS Community Edition, thus CSI Driver uses `format-options` for both scenarios, read [Format options / auth options](./configurations.md#format-options) for more.
-- `encrypt_rsa_key`: The RSA private key used in file system encryption, see [encryption](../security/encryption.md) for more.
+- `format-options`: Options used by the [`juicefs auth`](https://juicefs.com/docs/cloud/commands_reference#auth) command, this command deals with authentication and generate local mount configuration. This options is only available in v0.13.3 and above
 
 ### Using multiple file systems {#multiple-volumes}
 
@@ -268,47 +256,6 @@ stringData:
 ```
 
 After this is done, newly created PVs will start to use this configuration. You can [enter the Mount Pod](../administration/troubleshooting.md#check-mount-pod) and verify that the files are correctly mounted, and use `env` command to ensure the variables are set.
-
-### Use Service Account
-
-For managed Kubernetes services such as Amazon EKS, it is recommended to implement IAM roles for service accounts (IRSA) or workload identity federation to authenticate with object storage services, rather than embedding static access keys and secret keys in configuration.
-
-By default, the `juicefs-mount-sa` service account is assigned to the Mount Pod. To specify a custom service account (e.g., `my-juicefs-sa`), you can:
-
-- Static provisioning
-
-Modify the `volumeAttributes` in PV, add `juicefs/mount-service-account` :
-
-```yaml
-apiVersion: v1
-kind: PersistentVolume
-metadata:
-  name: juicefs-pv
-  ...
-spec:
-  csi:
-    ...
-    volumeAttributes:
-      juicefs/mount-service-account: my-juicefs-sa
-  ...
-```
-
-- Dynamic provisioning
-
-Modify the parameters in StorageClass, add `juicefs/mount-service-account`:
-
-```yaml
-apiVersion: storage.k8s.io/v1
-kind: StorageClass
-metadata:
-  name: juicefs-sc
-provisioner: csi.juicefs.com
-parameters:
-  ...
-  juicefs/mount-service-account: my-juicefs-sa
-```
-
-Besides bucket access, you could also leverage service account for [private Docker registry access](../administration/offline.md).
 
 ## Static provisioning {#static-provisioning}
 

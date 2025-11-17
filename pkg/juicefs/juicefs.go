@@ -36,12 +36,10 @@ import (
 	"k8s.io/klog/v2"
 	k8sexec "k8s.io/utils/exec"
 	"k8s.io/utils/mount"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/juicedata/juicefs-csi-driver/pkg/common"
 	"github.com/juicedata/juicefs-csi-driver/pkg/config"
 	podmount "github.com/juicedata/juicefs-csi-driver/pkg/juicefs/mount"
-	"github.com/juicedata/juicefs-csi-driver/pkg/juicefs/mount/builder"
 	"github.com/juicedata/juicefs-csi-driver/pkg/k8sclient"
 	"github.com/juicedata/juicefs-csi-driver/pkg/util"
 	"github.com/juicedata/juicefs-csi-driver/pkg/util/resource"
@@ -70,9 +68,6 @@ type Interface interface {
 	CreateTarget(ctx context.Context, target string) error
 	AuthFs(ctx context.Context, secrets map[string]string, jfsSetting *config.JfsSetting, force bool) (string, error)
 	Status(ctx context.Context, metaUrl string) error
-	CreateSnapshot(ctx context.Context, snapshotID, sourceVolumeID string, secrets map[string]string, volCtx map[string]string) error
-	DeleteSnapshot(ctx context.Context, snapshotID, sourceVolumeID string, secrets map[string]string) error
-	RestoreSnapshot(ctx context.Context, snapshotID, sourceVolumeID, targetVolumeID string, targetPath string, secrets map[string]string, volCtx map[string]string) error
 }
 
 type juicefs struct {
@@ -112,7 +107,7 @@ func (fs *jfs) GetBasePath() string {
 // CreateVol creates the directory needed
 func (fs *jfs) CreateVol(ctx context.Context, volumeID, subPath string) (string, error) {
 	log := util.GenLog(ctx, jfsLog, "CreateVol")
-	if !config.StorageClassShareMount && !config.FSShareMount && !config.ByProcess {
+	if !config.StorageClassShareMount && !config.ByProcess {
 		return fs.MountPath, nil
 	}
 	volPath := filepath.Join(fs.MountPath, subPath)
@@ -349,7 +344,7 @@ func (j *juicefs) Settings(ctx context.Context, volumeID, uniqueId, uuid string,
 func (j *juicefs) genJfsSettings(ctx context.Context, volumeID string, target string, secrets, volCtx map[string]string, options []string) (*config.JfsSetting, error) {
 	log := util.GenLog(ctx, jfsLog, "Settings")
 	// get unique id
-	uniqueId, err := j.getUniqueId(ctx, volumeID, secrets)
+	uniqueId, err := j.getUniqueId(ctx, volumeID)
 	if err != nil {
 		log.Error(err, "Get volume name by volume id error", "volumeID", volumeID)
 		return nil, err
@@ -375,77 +370,6 @@ func (j *juicefs) genJfsSettings(ctx context.Context, volumeID string, target st
 	return jfsSetting, nil
 }
 
-// shouldUseFSNameAsUniqueId checks if the file system name (`fsname`) can be used as the unique ID.
-//
-// Using `fsname` as the unique ID is possible under the following conditions:
-// 1. If no other secret with the same name exists in the cluster.
-// 2. If a secret with the same name exists, the configuration must be consistent:
-//   - For Community Edition (CE): The `metaurl` must be the same.
-//   - For Enterprise Edition (EE):
-//   - The `token` must be the same.
-//   - The console URL (`BASE_URL`) must either not exist or be the same.
-//
-// If these conditions are not met, the function returns `false`, and the system should
-// fall back to using the `volumeId` as the unique ID.
-func (j *juicefs) shouldUseFSNameAsUniqueId(ctx context.Context, fsname string, secrets map[string]string) (bool, error) {
-	log := util.GenLog(ctx, jfsLog, "shouldUseFSNameAsUniqueId")
-	if fsname == "" {
-		return false, nil
-	}
-
-	secretName := fmt.Sprintf("juicefs-%s-secret", fsname)
-	existSecret, err := j.K8sClient.GetSecret(ctx, secretName, config.Namespace)
-	if err != nil {
-		if k8serrors.IsNotFound(err) {
-			return true, nil
-		}
-		return false, err
-	}
-
-	v1, isCe := secrets["metaurl"]
-	v2, existIsCe := existSecret.Data["metaurl"]
-
-	if isCe != existIsCe {
-		log.Info("fallback to volumeId", "secretName", secretName, "fsname", fsname, "isCe", isCe, "existIsCe", existIsCe)
-		return false, nil
-	}
-
-	if isCe {
-		r := v1 == string(v2)
-		if !r {
-			log.Info("metaurl is not equal with exist secret, fallback to volumeId", "secretName", secretName, "fsname", fsname)
-		}
-		return r, nil
-	}
-
-	// EE
-	if secrets["token"] != string(existSecret.Data["token"]) {
-		log.V(1).Info("token is not equal with exist secret, fallback to volumeId", "secretName", secretName, "fsname", fsname)
-		return false, nil
-	}
-
-	consoleUrl := ""
-	if envs, ok := secrets["envs"]; ok {
-		var envsMap map[string]string
-		if err := config.ParseYamlOrJson(envs, &envsMap); err != nil {
-			return false, err
-		}
-		if val, ok := envsMap["BASE_URL"]; ok {
-			consoleUrl = val
-		}
-	}
-
-	existConsoleUrl := ""
-	if val, ok := existSecret.Data["BASE_URL"]; ok {
-		existConsoleUrl = string(val)
-	}
-	r := consoleUrl == existConsoleUrl
-	if !r {
-		log.Info("console url is not equal with exist secret, fallback to volumeId", "secretName", secretName, "consoleUrl", consoleUrl)
-	}
-	return r, nil
-}
-
 // getUniqueId: get UniqueId from volumeId (volumeHandle of PV)
 // When STORAGE_CLASS_SHARE_MOUNT env is set:
 //
@@ -456,7 +380,7 @@ func (j *juicefs) shouldUseFSNameAsUniqueId(ctx context.Context, fsname string, 
 // When STORAGE_CLASS_SHARE_MOUNT env not set:
 //
 //	UniqueId set as volumeId
-func (j *juicefs) getUniqueId(ctx context.Context, volumeId string, secrets map[string]string) (string, error) {
+func (j *juicefs) getUniqueId(ctx context.Context, volumeId string) (string, error) {
 	log := util.GenLog(ctx, jfsLog, "getUniqueId")
 	if config.StorageClassShareMount && !config.ByProcess {
 		pv, err := j.K8sClient.GetPersistentVolume(ctx, volumeId)
@@ -464,7 +388,6 @@ func (j *juicefs) getUniqueId(ctx context.Context, volumeId string, secrets map[
 		if err != nil && !k8serrors.IsNotFound(err) {
 			return "", err
 		}
-
 		// In dynamic provision, PV.spec.StorageClassName is which SC(StorageClass) it belongs to.
 		// if SC has template secrets, UniqueId set as volumeId
 		if err == nil && pv.Spec.StorageClassName != "" {
@@ -480,55 +403,6 @@ func (j *juicefs) getUniqueId(ctx context.Context, volumeId string, secrets map[
 				}
 			}
 			return pv.Spec.StorageClassName, nil
-		}
-	}
-	if config.FSShareMount && !config.ByProcess {
-		if fsname, ok := secrets["name"]; ok {
-			ok, err := j.shouldUseFSNameAsUniqueId(ctx, fsname, secrets)
-			if err != nil {
-				return "", err
-			}
-			if ok {
-				return fsname, nil
-			}
-			return volumeId, nil
-		}
-		pv, err := j.K8sClient.GetPersistentVolume(ctx, volumeId)
-		// In static provision, volumeId may not be PV name, it is expected that PV cannot be found by volumeId
-		if err != nil {
-			pvs, err := j.K8sClient.ListPersistentVolumesByVolumeHandle(ctx, volumeId)
-			if err != nil {
-				return "", err
-			}
-			if len(pvs) == 0 {
-				log.Info("no persistent volume found for volumeHandle, fallback to volumeId", "volumeHandle", volumeId)
-				return volumeId, nil
-			}
-			pv = &pvs[0]
-		}
-		// get secret
-		if pv.Spec.CSI != nil && pv.Spec.CSI.NodePublishSecretRef != nil {
-			secretName := pv.Spec.CSI.NodePublishSecretRef.Name
-			secretNamespace := pv.Spec.CSI.NodePublishSecretRef.Namespace
-			log.V(1).Info("Get secret from PV", "secretName", secretName, "secretNamespace", secretNamespace)
-			secret, err := j.K8sClient.GetSecret(ctx, secretName, secretNamespace)
-			if err != nil {
-				return "", err
-			}
-			secretData := make(map[string]string)
-			for k, v := range secret.Data {
-				secretData[k] = string(v)
-			}
-			if fsname, ok := secretData["name"]; ok {
-				ok, err := j.shouldUseFSNameAsUniqueId(ctx, string(fsname), secretData)
-				if err != nil {
-					return "", err
-				}
-				if ok {
-					return string(fsname), nil
-				}
-				return volumeId, nil
-			}
 		}
 	}
 	return volumeId, nil
@@ -565,57 +439,9 @@ func (j *juicefs) validTarget(target string) error {
 	return nil
 }
 
-var errorNotFound = fmt.Errorf("not found")
-
-func (j *juicefs) findMountPod(ctx context.Context, uniqueId, mountPath string) (*corev1.Pod, error) {
-	log := util.GenLog(ctx, jfsLog, "JfsUmount/findMountPod")
-	mountPods := []corev1.Pod{}
-	var mountPod *corev1.Pod
-	// get pod by exact name
-	oldPodName := podmount.GenPodNameByUniqueId(uniqueId, false)
-	pod, err := j.K8sClient.GetPod(ctx, oldPodName, config.Namespace)
-	if err != nil {
-		if !k8serrors.IsNotFound(err) {
-			log.Error(err, "Get mount pod error", "pod", oldPodName)
-			return nil, err
-		}
-	}
-	if pod != nil {
-		mountPods = append(mountPods, *pod)
-	}
-	labelSelector := &metav1.LabelSelector{MatchLabels: map[string]string{
-		common.PodTypeKey:          common.PodTypeValue,
-		common.PodUniqueIdLabelKey: uniqueId,
-	}}
-	fieldSelector := &fields.Set{"spec.nodeName": config.NodeName}
-	pods, err := j.K8sClient.ListPod(ctx, config.Namespace, labelSelector, fieldSelector)
-	if err != nil {
-		log.Error(err, "List pods of uniqueId error", "uniqueId", uniqueId)
-		return nil, err
-	}
-	mountPods = append(mountPods, pods...)
-	key := util.GetReferenceKey(mountPath)
-	for _, po := range mountPods {
-		if po.DeletionTimestamp != nil || resource.IsPodComplete(&po) {
-			continue
-		}
-		if _, ok := po.Annotations[key]; ok {
-			mountPod = &po
-			return mountPod, nil
-		}
-	}
-
-	return nil, errorNotFound
-}
-
 func (j *juicefs) JfsUnmount(ctx context.Context, volumeId, mountPath string) error {
 	log := util.GenLog(ctx, jfsLog, "JfsUmount")
-	// umount target path
-	if err := j.mnt.UmountTarget(ctx, mountPath, ""); err != nil {
-		return err
-	}
-	// umount mount pod
-	uniqueId, err := j.getUniqueId(ctx, volumeId, nil)
+	uniqueId, err := j.getUniqueId(ctx, volumeId)
 	if err != nil {
 		log.Error(err, "Get volume name by volume id error", "volumeId", volumeId)
 		return err
@@ -652,21 +478,68 @@ func (j *juicefs) JfsUnmount(ctx context.Context, volumeId, mountPath string) er
 		return err
 	}
 
-	mountPod, err := j.findMountPod(ctx, uniqueId, mountPath)
-	if err != nil && errors.Is(err, errorNotFound) && volumeId != uniqueId {
-		mountPod, err = j.findMountPod(ctx, volumeId, mountPath)
+	mountPods := []corev1.Pod{}
+	var mountPod *corev1.Pod
+	var podName string
+	// get pod by exact name
+	oldPodName := podmount.GenPodNameByUniqueId(uniqueId, false)
+	pod, err := j.K8sClient.GetPod(ctx, oldPodName, config.Namespace)
+	if err != nil {
+		if !k8serrors.IsNotFound(err) {
+			log.Error(err, "Get mount pod error", "pod", oldPodName)
+			return err
+		}
 	}
-	if err != nil && !errors.Is(err, errorNotFound) {
+	if pod != nil {
+		mountPods = append(mountPods, *pod)
+	}
+	// get pod by label
+	labelSelector := &metav1.LabelSelector{MatchLabels: map[string]string{
+		common.PodTypeKey:          common.PodTypeValue,
+		common.PodUniqueIdLabelKey: uniqueId,
+	}}
+	fieldSelector := &fields.Set{"spec.nodeName": config.NodeName}
+	pods, err := j.K8sClient.ListPod(ctx, config.Namespace, labelSelector, fieldSelector)
+	if err != nil {
+		log.Error(err, "List pods of uniqueId error", "uniqueId", uniqueId)
 		return err
 	}
-	if mountPod == nil {
-		log.Info("No mount pod found, skip umount mount pod", "mountPath", mountPath, "uniqueId", uniqueId, "volumeId", volumeId)
-		return nil
+	mountPods = append(mountPods, pods...)
+	// find pod by target
+	key := util.GetReferenceKey(mountPath)
+	for _, po := range mountPods {
+		if po.DeletionTimestamp != nil || resource.IsPodComplete(&po) {
+			continue
+		}
+		if _, ok := po.Annotations[key]; ok {
+			mountPod = &po
+			break
+		}
+	}
+	if mountPod != nil {
+		podName = mountPod.Name
 	}
 	lock := config.GetPodLock(config.GetPodLockKey(mountPod, ""))
 	lock.Lock()
 	defer lock.Unlock()
-	return j.mnt.JUmount(ctx, mountPath, mountPod.Name)
+
+	// umount target path
+	if err = j.mnt.UmountTarget(ctx, mountPath, podName); err != nil {
+		return err
+	}
+	if podName == "" {
+		return nil
+	}
+	// get refs of mount pod
+	refs, err := j.mnt.GetMountRef(ctx, mountPath, podName)
+	if err != nil {
+		return err
+	}
+	if refs == 0 {
+		// if refs is none, umount
+		return j.mnt.JUmount(ctx, mountPath, podName)
+	}
+	return nil
 }
 
 func (j *juicefs) CreateTarget(ctx context.Context, target string) error {
@@ -748,19 +621,11 @@ func (j *juicefs) SetQuota(ctx context.Context, secrets map[string]string, jfsSe
 
 	var args, cmdArgs []string
 	if jfsSetting.IsCe {
-		args = []string{"quota", "set", fmt.Sprintf("'%s'", secrets["metaurl"]), "--path", quotaPath, "--capacity", strconv.FormatInt(cap, 10)}
+		args = []string{"quota", "set", secrets["metaurl"], "--path", quotaPath, "--capacity", strconv.FormatInt(cap, 10)}
 		cmdArgs = []string{config.CeCliPath, "quota", "set", "${metaurl}", "--path", quotaPath, "--capacity", strconv.FormatInt(cap, 10)}
-		if util.SupportQuotaPathCreate(true, config.BuiltinCeVersion) {
-			args = append(args, "--create")
-			cmdArgs = append(cmdArgs, "--create")
-		}
 	} else {
 		args = []string{"quota", "set", secrets["name"], "--path", quotaPath, "--capacity", strconv.FormatInt(cap, 10)}
 		cmdArgs = []string{config.CliPath, "quota", "set", secrets["name"], "--path", quotaPath, "--capacity", strconv.FormatInt(cap, 10)}
-		if util.SupportQuotaPathCreate(false, config.BuiltinEeVersion) {
-			args = append(args, "--create")
-			cmdArgs = append(cmdArgs, "--create")
-		}
 	}
 	log.Info("quota cmd", "command", strings.Join(cmdArgs, " "))
 	cmdCtx, cmdCancel := context.WithTimeout(ctx, 10*defaultCheckTimeout)
@@ -776,8 +641,7 @@ func (j *juicefs) SetQuota(ctx context.Context, secrets map[string]string, jfsSe
 		if err != nil {
 			return errors.Wrap(err, authRes)
 		}
-		cmdStr := fmt.Sprintf("umask 000; %s %s", config.CliPath, strings.Join(args, " "))
-		quotaCmd := j.Exec.CommandContext(cmdCtx, "sh", "-c", cmdStr)
+		quotaCmd := j.Exec.CommandContext(cmdCtx, config.CliPath, args...)
 		quotaCmd.SetEnv(envs)
 		res, err := quotaCmd.CombinedOutput()
 
@@ -787,8 +651,7 @@ func (j *juicefs) SetQuota(ctx context.Context, secrets map[string]string, jfsSe
 		return wrapSetQuotaErr(string(res), err)
 	}
 
-	cmdStr := fmt.Sprintf("umask 000; %s %s", config.CeCliPath, strings.Join(args, " "))
-	quotaCmd := j.Exec.CommandContext(ctx, "sh", "-c", cmdStr)
+	quotaCmd := j.Exec.CommandContext(ctx, config.CeCliPath, args...)
 	quotaCmd.SetEnv(envs)
 	res, err := quotaCmd.CombinedOutput()
 	if err == nil {
@@ -944,172 +807,5 @@ func (j *juicefs) Status(ctx context.Context, metaUrl string) error {
 		return err
 	case err := <-done:
 		return err
-	}
-}
-
-// CreateSnapshot creates a snapshot using JuiceFS CLI clone command via a Job
-func (j *juicefs) CreateSnapshot(ctx context.Context, snapshotID, sourceVolumeID string, secrets map[string]string, volCtx map[string]string) error {
-	log := util.GenLog(ctx, jfsLog, "CreateSnapshot")
-	sourcePath, err := j.GetSubPath(ctx, sourceVolumeID)
-	if err != nil {
-		return errors.Wrap(err, "failed to get source subPath")
-	}
-	if sourcePath == "" || sourcePath == "/" {
-		return errors.New("sourcePath is empty or root path, cannot create snapshot")
-	}
-
-	log.Info("creating snapshot", "snapshotID", snapshotID, "sourceVolumeID", sourceVolumeID, "sourcePath", sourcePath)
-	// Get proper JfsSetting using Settings method
-	jfsSetting, err := j.Settings(ctx, sourceVolumeID, sourceVolumeID, "", secrets, volCtx, nil)
-	if err != nil {
-		return errors.Wrap(err, "failed to get settings")
-	}
-	// Use JobBuilder to create snapshot job
-	jobName := fmt.Sprintf("juicefs-snapshot-%s", snapshotID)
-	jfsSetting.SecretName = fmt.Sprintf("%s-secret", jobName)
-	jobBuilder := builder.NewJobBuilder(jfsSetting, 0)
-	secret := jobBuilder.NewSecret()
-	_, err = j.K8sClient.CreateSecret(ctx, &secret)
-	if err != nil {
-		if strings.Contains(err.Error(), "already exists") {
-			log.Info("snapshot secret already exists, reusing it")
-		} else {
-			return errors.Wrap(err, "failed to create snapshot secret")
-		}
-	}
-
-	job := jobBuilder.NewJobForSnapshot(jobName, snapshotID, sourceVolumeID, sourcePath)
-	log.Info("creating snapshot job", "jobName", jobName, "sourceVolume", sourceVolumeID, "snapshot", snapshotID)
-
-	// Create the job and wait for completion
-	_, err = j.K8sClient.CreateJob(ctx, job)
-	if err != nil {
-		if strings.Contains(err.Error(), "already exists") {
-			log.Info("snapshot job already exists, waiting for completion")
-		} else {
-			return errors.Wrap(err, "failed to create snapshot job")
-		}
-	}
-
-	// Wait for job to complete (with timeout)
-	log.Info("waiting for snapshot job to complete", "jobName", jobName)
-	timeout := time.After(120 * time.Second)
-	ticker := time.NewTicker(2 * time.Second)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-timeout:
-			return errors.New("snapshot job timed out after 120 seconds")
-		case <-ticker.C:
-			jobStatus, err := j.K8sClient.GetJob(ctx, jobName, config.Namespace)
-			if err != nil {
-				log.Info("waiting for job to be created", "jobName", jobName)
-				continue
-			}
-
-			if jobStatus.Status.Succeeded > 0 {
-				log.Info("snapshot job completed successfully", "jobName", jobName)
-				return nil
-			}
-
-			if jobStatus.Status.Failed > 0 {
-				pods, _ := j.K8sClient.ListPod(ctx, config.Namespace, &metav1.LabelSelector{
-					MatchLabels: map[string]string{"job": jobName},
-				}, nil)
-				if len(pods) > 0 {
-					logs, _ := j.K8sClient.GetPodLog(ctx, pods[0].Name, pods[0].Namespace, pods[0].Spec.Containers[0].Name)
-					log.Error(nil, "snapshot job failed", "logs", logs)
-				}
-				return errors.New("snapshot job failed")
-			}
-
-			log.Info("snapshot job still running", "jobName", jobName)
-		}
-	}
-}
-
-// RestoreSnapshot restores a volume from a snapshot (background/async)
-func (j *juicefs) RestoreSnapshot(ctx context.Context, snapshotID, sourceVolumeID, targetVolumeID string, targetPath string, secrets map[string]string, volCtx map[string]string) error {
-	log := util.GenLog(ctx, jfsLog, "RestoreSnapshot")
-	log.Info("restoring volume from snapshot", "snapshotID", snapshotID, "sourceVolumeID", sourceVolumeID, "targetVolumeID", targetVolumeID)
-
-	// Get proper JfsSetting using Settings method
-	jfsSetting, err := j.Settings(ctx, targetVolumeID, targetVolumeID, "", secrets, nil, nil)
-	if err != nil {
-		return errors.Wrap(err, "failed to get settings")
-	}
-
-	// Use JobBuilder to create snapshot job
-	jobName := fmt.Sprintf("juicefs-restore-%s", snapshotID)
-	// reuse snapshot secret
-	jfsSetting.SecretName = fmt.Sprintf("juicefs-snapshot-%s-secret", snapshotID)
-	jobBuilder := builder.NewJobBuilder(jfsSetting, 0)
-	job := jobBuilder.NewJobForRestore(jobName, snapshotID, sourceVolumeID, targetVolumeID, targetPath)
-
-	log.Info("creating background restore job", "jobName", jobName, "sourceVolume", sourceVolumeID, "targetVolume", targetVolumeID, "snapshot", snapshotID)
-	_, err = j.K8sClient.CreateJob(ctx, job)
-	if err != nil {
-		return errors.Wrap(err, "failed to create restore job")
-	}
-	log.Info("restore job created, will run in background", "jobName", jobName)
-	return nil
-}
-
-// DeleteSnapshot deletes a snapshot from parent-level storage
-func (j *juicefs) DeleteSnapshot(ctx context.Context, snapshotID, sourceVolumeID string, secrets map[string]string) error {
-	log := util.GenLog(ctx, jfsLog, "DeleteSnapshot")
-	log.Info("deleting snapshot", "snapshotID", snapshotID, "sourceVolumeID", sourceVolumeID)
-	// Get proper JfsSetting using Settings method
-	jfsSetting, err := j.Settings(ctx, sourceVolumeID, sourceVolumeID, "", secrets, nil, nil)
-	if err != nil {
-		return errors.Wrap(err, "failed to get settings")
-	}
-
-	// Use JobBuilder to create snapshot job
-	jobName := fmt.Sprintf("juicefs-delete-%s", snapshotID)
-	// reuse snapshot secret
-	jfsSetting.SecretName = fmt.Sprintf("juicefs-snapshot-%s-secret", snapshotID)
-	jobBuilder := builder.NewJobBuilder(jfsSetting, 0)
-	job := jobBuilder.NewJobForDeleteSnapshot(jobName, snapshotID, sourceVolumeID)
-
-	// ensure secret exists
-	if _, err = j.K8sClient.GetSecret(ctx, jfsSetting.SecretName, config.Namespace); err != nil {
-		// secret not found, may be already deleted, skip delete
-		if k8serrors.IsNotFound(err) {
-			return nil
-		}
-		return errors.Wrap(err, "failed to get delete snapshot secret")
-	}
-
-	log.Info("creating delete job", "jobName", jobName, "sourceVolume", sourceVolumeID, "snapshot", snapshotID)
-	_, err = j.K8sClient.CreateJob(ctx, job)
-	if err != nil {
-		if strings.Contains(err.Error(), "already exists") {
-			log.Info("delete job already exists, waiting for completion", "jobName", jobName)
-		} else {
-			return errors.Wrap(err, "failed to create delete job")
-		}
-	}
-	// Wait for job to complete (with timeout)
-	log.Info("waiting for delete job to complete", "jobName", jobName)
-	timeout := time.After(120 * time.Second)
-	ticker := time.NewTicker(2 * time.Second)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-timeout:
-			return errors.New("delete snapshot job timed out after 120 seconds")
-		case <-ticker.C:
-			jobStatus, err := j.K8sClient.GetJob(ctx, jobName, config.Namespace)
-			if err != nil {
-				continue
-			}
-			if jobStatus.Status.Succeeded > 0 {
-				log.Info("delete snapshot job completed successfully", "jobName", jobName)
-				return client.IgnoreNotFound(j.K8sClient.DeleteSecret(ctx, fmt.Sprintf("juicefs-snapshot-%s-secret", snapshotID), config.Namespace))
-			}
-		}
 	}
 }

@@ -2,7 +2,6 @@ package driver
 
 import (
 	"context"
-	"os"
 	"path"
 	"reflect"
 	"strconv"
@@ -11,15 +10,11 @@ import (
 	"github.com/container-storage-interface/spec/lib/go/csi"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
-	"google.golang.org/protobuf/types/known/timestamppb"
 	"k8s.io/klog/v2"
 
-	"github.com/juicedata/juicefs-csi-driver/pkg/common"
-	"github.com/juicedata/juicefs-csi-driver/pkg/config"
 	"github.com/juicedata/juicefs-csi-driver/pkg/juicefs"
 	"github.com/juicedata/juicefs-csi-driver/pkg/k8sclient"
 	"github.com/juicedata/juicefs-csi-driver/pkg/util"
-	"github.com/juicedata/juicefs-csi-driver/pkg/util/dispatch"
 	"github.com/juicedata/juicefs-csi-driver/pkg/util/resource"
 )
 
@@ -39,58 +34,24 @@ var (
 	controllerCaps = []csi.ControllerServiceCapability_RPC_Type{
 		csi.ControllerServiceCapability_RPC_CREATE_DELETE_VOLUME,
 		csi.ControllerServiceCapability_RPC_EXPAND_VOLUME,
-		csi.ControllerServiceCapability_RPC_CREATE_DELETE_SNAPSHOT,
-		// csi.ControllerServiceCapability_RPC_LIST_SNAPSHOTS,
 	}
 )
 
 type controllerService struct {
 	csi.UnimplementedControllerServer
-	juicefs   juicefs.Interface
-	vols      map[string]int64
-	volLocks  *resource.VolumeLocks
-	quotaPool *dispatch.Pool
+	juicefs  juicefs.Interface
+	vols     map[string]int64
+	volLocks *resource.VolumeLocks
 }
 
 func newControllerService(k8sClient *k8sclient.K8sClient) (controllerService, error) {
 	jfs := juicefs.NewJfsProvider(nil, k8sClient)
 
 	return controllerService{
-		juicefs:   jfs,
-		vols:      make(map[string]int64),
-		volLocks:  resource.NewVolumeLocks(),
-		quotaPool: dispatch.NewPool(defaultQuotaPoolNum),
+		juicefs:  jfs,
+		vols:     make(map[string]int64),
+		volLocks: resource.NewVolumeLocks(),
 	}, nil
-}
-
-func (d *controllerService) setQuotaInController(
-	ctx context.Context,
-	volumeId string,
-	capacityRange *csi.CapacityRange,
-	mountOptions []string,
-	subPath string,
-	secrets map[string]string,
-	volCtx map[string]string) error {
-
-	log := klog.NewKlogr().WithName("setQuotaInController")
-	subdir := util.ParseSubdirFromMountOptions(mountOptions)
-	quotaPath := path.Join("/", subdir, subPath)
-	if capacityRange != nil && capacityRange.RequiredBytes > 0 {
-		capacity := capacityRange.RequiredBytes
-		log.V(1).Info("setting quota in controller", "volumeId", volumeId, "name", secrets["name"], "path", quotaPath, "capacity", capacity)
-
-		settings, err := d.juicefs.Settings(ctx, volumeId, volumeId, secrets["name"], secrets, volCtx, mountOptions)
-		if err != nil {
-			log.Error(err, "failed to get settings for quota")
-			return status.Errorf(codes.Internal, "Could not get settings for quota: %v", err)
-		}
-
-		if err := d.juicefs.SetQuota(ctx, secrets, settings, quotaPath, capacity); err != nil {
-			log.Error(err, "failed to set quota in controller", "quotaPath", quotaPath, "capacity", capacity)
-			return status.Errorf(codes.Internal, "Could not set quota: %v", err)
-		}
-	}
-	return nil
 }
 
 // CreateVolume create directory in an existing JuiceFS filesystem
@@ -117,19 +78,6 @@ func (d *controllerService) CreateVolume(ctx context.Context, req *csi.CreateVol
 	secrets := req.Secrets
 	log.Info("Secrets contains keys", "secretKeys", reflect.ValueOf(secrets).MapKeys())
 
-	// Check if restoring from snapshot
-	var snapshotID string
-	var sourceVolumeID string
-	var err error
-	if req.VolumeContentSource != nil {
-		if snapshot := req.VolumeContentSource.GetSnapshot(); snapshot != nil {
-			snapshotID, sourceVolumeID, err = util.ParseSnapshotHandle(snapshot.GetSnapshotId())
-			if err != nil {
-				return nil, status.Errorf(codes.NotFound, "Could not parse snapshot handle: %v", err)
-			}
-		}
-	}
-
 	requiredCap := req.CapacityRange.GetRequiredBytes()
 	if capa, ok := d.vols[req.Name]; ok && capa < requiredCap {
 		return nil, status.Errorf(codes.AlreadyExists, "Volume: %q, capacity bytes: %d", req.Name, requiredCap)
@@ -150,17 +98,11 @@ func (d *controllerService) CreateVolume(ctx context.Context, req *csi.CreateVol
 			return nil, status.Errorf(codes.InvalidArgument, "Dynamic mounting uses the sub-path named pv name as data isolation, so read-only mode cannot be used.")
 		}
 	}
-
-	// Restore from snapshot if requested
-	if snapshotID != "" && sourceVolumeID != "" {
-		log.Info("Initiating restore from snapshot in controller", "volumeId", volumeId, "snapshotID", snapshotID)
-		if err := d.juicefs.RestoreSnapshot(ctx, snapshotID, sourceVolumeID, volumeId, subPath, secrets, volCtx); err != nil {
-			log.Error(err, "Failed to initiate snapshot restore", "volumeId", volumeId, "snapshotID", snapshotID)
-			return nil, status.Errorf(codes.Internal, "Could not restore snapshot: %v", err)
-		} else {
-			log.Info("Successfully initiated snapshot restore", "volumeId", volumeId, "snapshotID", snapshotID)
-		}
-	}
+	// create volume
+	//err := d.juicefs.JfsCreateVol(ctx, volumeId, subPath, secrets, volCtx)
+	//if err != nil {
+	//	return nil, status.Errorf(codes.Internal, "Could not createVol in juicefs: %v", err)
+	//}
 
 	// check if use pathpattern
 	if req.Parameters["pathPattern"] != "" {
@@ -171,34 +113,12 @@ func (d *controllerService) CreateVolume(ctx context.Context, req *csi.CreateVol
 		log.Info("volume uses secretFinalizer, please enable provisioner in CSI Controller, not works in default mode.", "volumeId", volumeId)
 	}
 
-	options := []string{}
-	for _, vc := range req.VolumeCapabilities {
-		if m := vc.GetMount(); m != nil {
-			options = append(options, m.MountFlags...)
-		}
-	}
-
-	if config.GlobalConfig.EnableSetQuota == nil || *config.GlobalConfig.EnableSetQuota {
-		if config.GlobalConfig.EnableControllerSetQuota == nil || *config.GlobalConfig.EnableControllerSetQuota {
-			if util.SupportQuotaPathCreate(true, config.BuiltinCeVersion) && util.SupportQuotaPathCreate(false, config.BuiltinEeVersion) {
-				volCtx[common.ControllerQuotaSetKey] = "true"
-				d.quotaPool.Run(context.Background(), func(ctx context.Context) {
-					if err := d.setQuotaInController(ctx, volumeId, req.GetCapacityRange(), options, subPath, secrets, volCtx); err != nil {
-						log.Error(err, "set quota in controller error")
-					}
-				})
-			}
-		}
-	}
-
 	volCtx["subPath"] = subPath
 	volCtx["capacity"] = strconv.FormatInt(requiredCap, 10)
-
 	volume := csi.Volume{
 		VolumeId:      volumeId,
 		CapacityBytes: requiredCap,
 		VolumeContext: volCtx,
-		ContentSource: req.VolumeContentSource,
 	}
 	return &csi.CreateVolumeResponse{Volume: &volume}, nil
 }
@@ -333,95 +253,23 @@ func isValidVolumeCapabilities(volCaps []*csi.VolumeCapability) bool {
 	return foundAll
 }
 
-// CreateSnapshot creates a snapshot of a volume
+// CreateSnapshot unimplemented
 func (d *controllerService) CreateSnapshot(ctx context.Context, req *csi.CreateSnapshotRequest) (*csi.CreateSnapshotResponse, error) {
-	log := klog.NewKlogr().WithName("CreateSnapshot")
-	log.V(1).Info("called with args", "args", req)
-
-	// Validate input
-	sourceVolumeID := req.GetSourceVolumeId()
-	if len(sourceVolumeID) == 0 {
-		return nil, status.Error(codes.InvalidArgument, "Source volume ID cannot be empty")
-	}
-
-	// name is uid for volume snapshot content
-	snapshotID := req.GetName()
-	if len(snapshotID) == 0 {
-		return nil, status.Error(codes.InvalidArgument, "Snapshot ID cannot be empty")
-	}
-
-	snapshotHandle := util.EnsureSnapshotHandle(snapshotID, sourceVolumeID)
-	secrets := req.GetSecrets()
-	log.Info("Secrets contains keys", "secretKeys", reflect.ValueOf(secrets).MapKeys())
-
-	// Get volume context - try to retrieve PV if available
-	volCtx := make(map[string]string)
-	log.V(1).Info("creating snapshot", "sourceVolumeID", sourceVolumeID, "snapshotID", snapshotID)
-
-	// Create the snapshot
-	err := d.juicefs.CreateSnapshot(ctx, snapshotID, sourceVolumeID, secrets, volCtx)
-	if err != nil {
-		if os.IsExist(err) {
-			return nil, status.Errorf(codes.AlreadyExists, "Snapshot %q already exists", snapshotID)
-		}
-		return nil, status.Errorf(codes.Internal, "Could not create snapshot: %v", err)
-	}
-
-	creationTime := timestamppb.Now()
-	snapshot := &csi.Snapshot{
-		SnapshotId:     snapshotHandle,
-		SourceVolumeId: sourceVolumeID,
-		CreationTime:   creationTime,
-		ReadyToUse:     true,
-	}
-
-	log.Info("snapshot created successfully", "snapshotID", snapshotID, "sourceVolumeID", sourceVolumeID)
-	return &csi.CreateSnapshotResponse{
-		Snapshot: snapshot,
-	}, nil
+	return nil, status.Error(codes.Unimplemented, "")
 }
 
-// DeleteSnapshot deletes a snapshot
+// DeleteSnapshot unimplemented
 func (d *controllerService) DeleteSnapshot(ctx context.Context, req *csi.DeleteSnapshotRequest) (*csi.DeleteSnapshotResponse, error) {
-	log := klog.NewKlogr().WithName("DeleteSnapshot")
-	log.V(1).Info("called with args", "args", req)
-
-	// Validate input
-	if len(req.GetSnapshotId()) == 0 {
-		return nil, status.Error(codes.InvalidArgument, "Snapshot ID cannot be empty")
-	}
-
-	snapshotID, sourceVolumeID, err := util.ParseSnapshotHandle(req.GetSnapshotId())
-	if err != nil {
-		// invalid snapshot handle, just return success
-		return nil, nil
-	}
-
-	secrets := req.GetSecrets()
-	log.Info("Secrets contains keys", "secretKeys", reflect.ValueOf(secrets).MapKeys())
-
-	log.Info("start delete snapshot", "snapshotID", snapshotID, "sourceVolumeID", sourceVolumeID)
-	err = d.juicefs.DeleteSnapshot(ctx, snapshotID, sourceVolumeID, secrets)
-	if err != nil {
-		return nil, status.Errorf(codes.Internal, "Could not delete snapshot: %v", err)
-	}
-
-	log.Info("snapshot deleted successfully", "snapshotID", snapshotID)
-	return &csi.DeleteSnapshotResponse{}, nil
+	return nil, status.Error(codes.Unimplemented, "")
 }
 
 // ListSnapshots unimplemented
 func (d *controllerService) ListSnapshots(ctx context.Context, req *csi.ListSnapshotsRequest) (*csi.ListSnapshotsResponse, error) {
-	log := klog.NewKlogr().WithName("ListSnapshots")
-	log.V(1).Info("called with args", "args", req)
 	return nil, status.Error(codes.Unimplemented, "")
 }
 
 // ControllerExpandVolume adjusts quota according to capacity settings
 func (d *controllerService) ControllerExpandVolume(ctx context.Context, req *csi.ControllerExpandVolumeRequest) (*csi.ControllerExpandVolumeResponse, error) {
-	if config.GlobalConfig.EnableSetQuota != nil && !*config.GlobalConfig.EnableSetQuota {
-		return nil, status.Error(codes.InvalidArgument, "EnableSetQuota is false in config, skipping set quota")
-	}
 	log := klog.NewKlogr().WithName("ControllerExpandVolume")
 	secrets := req.Secrets
 	req.Secrets = nil
@@ -437,14 +285,15 @@ func (d *controllerService) ControllerExpandVolume(ctx context.Context, req *csi
 	if capRange == nil {
 		return nil, status.Error(codes.InvalidArgument, "Capacity range not provided")
 	}
+
 	newSize := capRange.GetRequiredBytes()
 	maxVolSize := capRange.GetLimitBytes()
 	if maxVolSize > 0 && maxVolSize < newSize {
 		return nil, status.Error(codes.InvalidArgument, "After round-up, volume size exceeds the limit specified")
 	}
+	options := []string{}
 
 	// get mount options
-	options := []string{}
 	volCap := req.GetVolumeCapability()
 	if volCap != nil {
 		log.Info("volume capability", "volCap", volCap)
@@ -454,15 +303,36 @@ func (d *controllerService) ControllerExpandVolume(ctx context.Context, req *csi
 		}
 	}
 
-	subPath, err := d.juicefs.GetSubPath(ctx, volumeID)
+	capacity, err := strconv.ParseInt(strconv.FormatInt(newSize, 10), 10, 64)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "get subpath error: %v", err)
+		return nil, status.Errorf(codes.Internal, "invalid capacity %d: %v", capacity, err)
 	}
 
-	if err := d.setQuotaInController(ctx, volumeID, capRange, options, subPath, secrets, nil); err != nil {
-		return nil, err
+	// get quota path
+	quotaPath, err := d.juicefs.GetSubPath(ctx, volumeID)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "get quotaPath error: %v", err)
+	}
+	settings, err := d.juicefs.Settings(ctx, volumeID, volumeID, secrets["name"], secrets, nil, options)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "get settings: %v", err)
 	}
 
+	var subdir string
+	for _, o := range settings.Options {
+		pair := strings.Split(o, "=")
+		if len(pair) != 2 {
+			continue
+		}
+		if pair[0] == "subdir" {
+			subdir = path.Join("/", pair[1])
+		}
+	}
+
+	err = d.juicefs.SetQuota(ctx, secrets, settings, path.Join(subdir, quotaPath), capacity)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "set quota: %v", err)
+	}
 	return &csi.ControllerExpandVolumeResponse{
 		CapacityBytes:         newSize,
 		NodeExpansionRequired: false,

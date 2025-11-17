@@ -85,6 +85,10 @@ const WarmupModal: React.FC<{
         setStart(false)
       },
       onMessage: (msg) => {
+        // ignore and remove ANSI escape sequences
+        if (msg.data.includes('…')) {
+          return
+        }
         setData((prev) => prev + removeAnsiSequences(msg.data))
       },
     },

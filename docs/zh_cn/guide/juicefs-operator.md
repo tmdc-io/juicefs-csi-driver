@@ -14,7 +14,7 @@ helm repo add juicefs https://juicedata.github.io/charts/
 helm repo update
 ```
 
-安装之前，阅读 [`values.yaml`](https://raw.githubusercontent.com/juicedata/charts/refs/heads/main/charts/juicefs-operator/values.yaml) 了解各个配置项，该文件包含了所有的默认配置，如果需要修改配置，请在本地创建另一份 values（以下且称 `values-mycluster.yaml`），并把需要修改的部分加入其中。如果需要在多个 Kubernetes 集群部署 Operator，就创建多个 values 文件，来区分不同的集群配置。
+安装之前，阅读 [`values.yaml`](https://raw.githubusercontent.com/juicedata/charts/refs/heads/main/charts/juicefs-operator/values.yaml) 了解各个配置项，该文件包含了所有的默认配置，如果需要修改配置，请在本地创建另一份 values（以下且称 `values-mycuster.yaml`），并把需要修改的部分加入其中。如果需要在多个 Kubernetes 集群部署 Operator，就创建多个 values 文件，来区分不同的集群配置。
 
 ```shell
 # 根据需要修改 values-mycluster.yaml
@@ -26,26 +26,6 @@ helm upgrade --install juicefs-operator juicefs/juicefs-operator -n juicefs-oper
 ```shell
 kubectl wait -n juicefs-operator --for=condition=Available=true --timeout=120s deployment/juicefs-operator
 ```
-
-## 更新 JuiceFS Operator {#update-juicefs-operator}
-
-如果需要更新 Operator，可以使用以下命令：
-
-```shell
-helm repo update
-helm upgrade juicefs-operator juicefs/juicefs-operator -n juicefs-operator --reuse-values
-```
-
-:::note
-
-由于 Helm 的限制，更新时并不会一起更新 CRD，因此请在更新 Operator 之后，手动更新 CRD：
-
-```shell
-export CHART_VERSION=$(helm show chart juicefs/juicefs-operator | grep appVersion | awk '{print $2}')
-kubectl apply -f https://raw.githubusercontent.com/juicedata/juicefs-operator/refs/tags/v${CHART_VERSION}/dist/crd.yaml
-```
-
-:::
 
 ## 缓存组集群 {#cache-group}
 
@@ -71,17 +51,14 @@ stringData:
   token: xx
   access-key: xx
   secret-key: xx
-  # envs: '{"BASE_URL": "http://<IP or HOST>/static"}'
 ---
 apiVersion: juicefs.io/v1
 kind: CacheGroup
 metadata:
   name: cachegroup-sample
-  namespace: juicefs-cache-group
 spec:
   secretRef:
     name: juicefs-secret
-  cacheGroup: juicefs-cache-group-cachegroup-sample # 自定义缓存组名称，默认为 `${NAMESPACE}-${NAME}`
   worker:
     template:
       nodeSelector:
@@ -91,9 +68,6 @@ spec:
         - cache-size=204800
         - free-space-ratio=0.01
         - group-weight=100
-      cacheDirs:
-        - type: HostPath
-          path: /mnt/cache
       resources:
         requests:
           cpu: 100m
@@ -184,88 +158,6 @@ kubectl label node node1 juicefs.io/cg-worker-
 
 缓存组支持的所有配置项可以在[这里](https://github.com/juicedata/juicefs-operator/blob/main/config/samples/v1_cachegroup.yaml)找到完整示范。
 
-### 指定 Worker 副本数 <VersionAdd>0.6.0</VersionAdd> {#worker-replicas}
-
-你可以通过设置 `spec.replicas` 字段来指定缓存组 worker 的副本数：
-
-:::note
-
-1. replicas 只能在创建时设置，并且不能删除。
-2. 使用此种方式须确保 Pod IP 可以固定，并且缓存盘可以跟随 Pod 迁移到其他节点，否则可能会导致缓存穿透。
-3. `worker.overwrite` 字段将不适用于此模式，即不能为不同的节点指定不同的配置。
-
-:::
-
-```yaml
-apiVersion: juicefs.io/v1
-kind: CacheGroup
-metadata:
-  name: cachegroup-sample
-spec:
-  replicas: 3    # 指定创建 3 个 worker 副本
-  worker:
-    template:
-      nodeSelector:
-        juicefs.io/cg-worker: "true"
-      image: juicedata/mount:ee-5.1.1-1faf43b
-      opts:
-        - cache-size=204800
-        - free-space-ratio=0.01
-        - group-weight=100
-      cacheDirs:
-        - type: VolumeClaimTemplates
-          volumeClaimTemplate:
-            metadata:
-              name: jfs-cache
-            spec:
-              accessModes:
-              - ReadWriteOnce
-              resources:
-                requests:
-                  storage: 20Gi
-              storageClassName: <your-storage-class-name>
-```
-
-通过这种方式，你可以精确控制缓存组中 worker 的数量，而不是依赖于节点标签的数量。
-
-### 亲和性与反亲和性 <VersionAdd>0.7.2</VersionAdd> {#affinity-and-anti-affinity}
-
-默认情况下，缓存组 Operator 会将 worker 部署在所有符合 `nodeSelector` 的节点上。不遵循节点和 Pod 之间的亲和性与反亲和性规则。
-
-从 `v0.7.2` 版本开始，缓存组 Operator 支持通过 `spec.enableScheduling` 字段来启用调度功能。
-
-例如将缓存组部署在不同的 zone 上。
-
-:::note
-
-只会处理 `requiredDuringSchedulingIgnoredDuringExecution` 规则。
-
-:::
-
-```yaml {9-21}
-apiVersion: juicefs.io/v1
-kind: CacheGroup
-metadata:
-  name: cachegroup-sample
-  namespace: juicefs-cache-group
-spec:
-  secretRef:
-    name: cachegroup-sample-secret
-  enableScheduling: true
-  worker:
-    template:
-      affinity:
-        podAntiAffinity:
-          requiredDuringSchedulingIgnoredDuringExecution:
-            - labelSelector:
-                matchExpressions:
-                  - key: juicefs.io/cache-group
-                    operator: In
-                    values:
-                      - cachegroup-sample
-              topologyKey: "topology.kubernetes.io/zone"
-```
-
 ### 更新策略 {#update-strategy}
 
 更新缓存组的配置时，可以通过 `spec.updateStrategy` 字段来指定缓存组下面的 worker 节点的更新策略。
@@ -289,7 +181,7 @@ spec:
 
 ### 缓存目录 {#cache-directory}
 
-缓存目录可以通过 `spec.worker.template.cacheDirs` 字段来设置，支持的类型有 `HostPath`, `PVC`, `VolumeClaimTemplates` <VersionAdd>0.6.0</VersionAdd> 。
+缓存目录可以通过 `spec.worker.template.cacheDirs` 字段来设置，支持的类型有 `HostPath` 和 `PVC`。
 
 ```yaml {12-16}
 apiVersion: juicefs.io/v1
@@ -308,18 +200,6 @@ spec:
           path: /var/jfsCache-0
         - type: PVC
           name: juicefs-cache-pvc
-        # v0.6.0 版本开始支持 VolumeClaimTemplates
-        - type: VolumeClaimTemplates
-          volumeClaimTemplate:
-            metadata:
-              name: jfs-cache
-            spec:
-              accessModes:
-              - ReadWriteOnce
-              resources:
-                requests:
-                  storage: 20Gi
-              storageClassName: <your-storage-class-name>
 ```
 
 ### 为不同节点指定不同配置 {#specify-different-configurations-for-different-nodes}

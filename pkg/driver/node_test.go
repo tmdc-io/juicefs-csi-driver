@@ -22,7 +22,6 @@ import (
 	"os"
 	"os/exec"
 	"reflect"
-	"sync"
 	"testing"
 
 	. "github.com/agiledragon/gomonkey/v2"
@@ -54,17 +53,11 @@ var _ = Describe("nodeService", func() {
 	registerer, _ := util.NewPrometheus(config.NodeName)
 	metrics := newNodeMetrics(registerer)
 	var juicefsDriver *nodeService
-	mounter := &mount.SafeFormatAndMount{
-		Interface: mount.New(""),
-		Exec:      k8sexec.New(),
-	}
 	BeforeEach(func() {
 		juicefsDriver = &nodeService{
-			nodeID:             "fake_node_id",
-			k8sClient:          &k8s.K8sClient{Interface: fake.NewSimpleClientset()},
-			metrics:            metrics,
-			SafeFormatAndMount: *mounter,
-			unmountedPaths:     &sync.Map{},
+			nodeID:    "fake_node_id",
+			k8sClient: &k8s.K8sClient{Interface: fake.NewSimpleClientset()},
+			metrics:   metrics,
 		}
 	})
 

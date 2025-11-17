@@ -35,12 +35,7 @@ import {
 } from '@/icons'
 import { DetailParams } from '@/types'
 import { Pod } from '@/types/k8s'
-import {
-  isMountContainer,
-  isMountPod,
-  supportBinarySmoothUpgrade,
-  supportDebug,
-} from '@/utils'
+import { isMountPod, supportBinarySmoothUpgrade, supportDebug } from '@/utils'
 
 const Containers: React.FC<{
   pod: Pod
@@ -120,7 +115,7 @@ const Containers: React.FC<{
                     </Tooltip>
                   )}
                 </XTermModal>
-                {isMountPod(pod) || isMountContainer(record) ? (
+                {isMountPod(pod) ? (
                   <>
                     <LogModal
                       namespace={namespace!}
@@ -173,7 +168,7 @@ const Containers: React.FC<{
                       )}
                     </WarmupModal>
 
-                    {supportBinarySmoothUpgrade(pod, c.image) ? (
+                    {supportBinarySmoothUpgrade(c.image) ? (
                       <UpgradeModal
                         namespace={namespace!}
                         name={name!}

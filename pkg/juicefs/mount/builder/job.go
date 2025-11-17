@@ -24,7 +24,6 @@ import (
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/klog/v2"
 
@@ -88,10 +87,8 @@ func GenJobNameByVolumeId(volumeId string) string {
 }
 
 func (r *JobBuilder) newJob(jobName string) *batchv1.Job {
-	if r.jfsSetting.SecretName == "" {
-		secretName := jobName + "-secret"
-		r.jfsSetting.SecretName = secretName
-	}
+	secretName := jobName + "-secret"
+	r.jfsSetting.SecretName = secretName
 	podTemplate := r.genCommonJuicePod(r.genCommonContainer)
 	ttlSecond := DefaultJobTTLSecond
 	podTemplate.Spec.Containers[0].Lifecycle = &corev1.Lifecycle{
@@ -103,8 +100,8 @@ func (r *JobBuilder) newJob(jobName string) *batchv1.Job {
 	podTemplate.Spec.NodeName = ""
 	// set NodeSelector/Affinity/Tolerations follow the csi-node
 	podTemplate.Spec.NodeSelector = config.CSIPod.Spec.NodeSelector
-	podTemplate.Spec.Affinity = config.CSIPod.Spec.Affinity.DeepCopy()
-	podTemplate.Spec.Tolerations = util.CopySlice(config.CSIPod.Spec.Tolerations)
+	podTemplate.Spec.Affinity = config.CSIPod.Spec.Affinity
+	podTemplate.Spec.Tolerations = config.CSIPod.Spec.Tolerations
 	// set priority class name to empty to make job use default priority class
 	podTemplate.Spec.PriorityClassName = ""
 	podTemplate.Spec.RestartPolicy = corev1.RestartPolicyOnFailure
@@ -179,7 +176,7 @@ func NewFuseAbortJob(mountpod *corev1.Pod, devMinor uint32, mntPath string) *bat
 	jobName := fmt.Sprintf("%s-abort-fuse", GenJobNameByVolumeId(mountpod.Name))
 	ttlSecond := DefaultJobTTLSecond
 	privileged := true
-	supFusePass := util.SupportFusePass(mountpod)
+	supFusePass := util.SupportFusePass(mountpod.Spec.Containers[0].Image)
 	command := fmt.Sprintf(`set -x
 supFusePass=%t
 if [ $supFusePass = true ]; then
@@ -272,10 +269,10 @@ func NewCanaryJob(ctx context.Context, client *k8s.K8sClient, mountPod *corev1.P
 	}
 	attr := setting.Attr
 	volumeId := mountPod.Labels[common.PodUniqueIdLabelKey]
-	name := GenJobNameByVolumeId(fmt.Sprintf("%s-%s", volumeId, config.NodeName)) + "-canary"
+	name := GenJobNameByVolumeId(volumeId) + "-canary"
 	if _, err := client.GetJob(ctx, name, config.Namespace); err == nil {
 		log.Info("canary job already exists, delete it first", "name", name)
-		if err := client.DeleteJob(ctx, name, config.Namespace); err != nil && !errors.IsNotFound(err) {
+		if err := client.DeleteJob(ctx, name, config.Namespace); err != nil {
 			log.Error(err, "delete canary job error", "name", name)
 			return nil, err
 		}
@@ -333,172 +330,4 @@ func NewCanaryJob(ctx context.Context, client *k8s.K8sClient, mountPod *corev1.P
 		},
 	}
 	return &cJob, nil
-}
-
-// NewJobForSnapshot creates a Job to create a snapshot using juicefs clone
-func (r *JobBuilder) NewJobForSnapshot(jobName, snapshotID, sourceVolumeID string, sourcePath string) *batchv1.Job {
-	job := r.newJob(jobName)
-
-	if !strings.HasPrefix(sourcePath, "/") {
-		sourcePath = "/" + sourcePath
-	}
-	// Override TTL and BackoffLimit for snapshot jobs
-	ttlSecond := int32(60)
-	backoffLimit := int32(2)
-	job.Spec.TTLSecondsAfterFinished = &ttlSecond
-	job.Spec.BackoffLimit = &backoffLimit
-
-	// Add snapshot-specific labels
-	job.ObjectMeta.Labels["app"] = "juicefs-snapshot"
-	job.ObjectMeta.Labels["snapshot"] = snapshotID
-	job.Spec.Template.ObjectMeta.Labels = map[string]string{
-		"app": "juicefs-snapshot",
-		"job": jobName,
-	}
-
-	// Generate mount command and modify for snapshot operation
-	mountCmd := r.getJobCommand()
-	initCmd := r.genInitCommand()
-
-	snapshotCmd := fmt.Sprintf(`
-set -ex
-echo "=========================================="
-echo "JuiceFS Snapshot Creation"
-echo "Snapshot: %s"
-echo "Source Volume: %s"
-echo "=========================================="
-
-echo "Mounting JuiceFS..."
-%s
-sleep 2
-
-echo "Creating snapshot directory..."
-mkdir -p /mnt/jfs/.snapshots/%s
-
-echo "Cloning volume to snapshot..."
-juicefs clone /mnt/jfs%s /mnt/jfs/.snapshots/%s/%s
-
-echo "=========================================="
-echo "Snapshot created successfully!"
-echo "=========================================="
-
-umount /mnt/jfs -l && rmdir /mnt/jfs || true
-`, snapshotID, sourceVolumeID, mountCmd, sourceVolumeID, sourcePath, sourceVolumeID, snapshotID)
-
-	cmd := strings.Join([]string{initCmd, snapshotCmd}, "\n")
-	job.Spec.Template.Spec.Containers[0].Command = []string{"sh", "-c", cmd}
-
-	return job
-}
-
-// NewJobForRestore creates a Job to restore a snapshot using juicefs clone
-func (r *JobBuilder) NewJobForRestore(jobName, snapshotID, sourceVolumeID, targetVolumeID, targetPath string) *batchv1.Job {
-	job := r.newJob(jobName)
-	// Override TTL and BackoffLimit for restore jobs
-	ttlSecond := int32(300)
-	backoffLimit := int32(3)
-	job.Spec.TTLSecondsAfterFinished = &ttlSecond
-	job.Spec.BackoffLimit = &backoffLimit
-
-	// Add restore-specific labels
-	job.ObjectMeta.Labels["app"] = "juicefs-restore"
-	job.ObjectMeta.Labels["snapshot"] = snapshotID
-	job.Spec.Template.ObjectMeta.Labels = map[string]string{
-		"app": "juicefs-restore",
-		"job": jobName,
-	}
-
-	// Generate mount command and modify for restore operation
-	mountCmd := r.getJobCommand()
-	initCmd := r.genInitCommand()
-
-	restoreCmd := fmt.Sprintf(`
-set -ex
-echo "=========================================="
-echo "JuiceFS Snapshot Restore"
-echo "Time: $(date)"
-echo "Snapshot: %s"
-echo "Source Volume: %s"
-echo "Target Volume: %s"
-echo "=========================================="
-
-echo "Mounting JuiceFS..."
-%s
-sleep 2
-
-echo "Preparing target directory..."
-# If target exists and is empty, remove it so clone can create it
-# If target has files, clone will fail (which is correct - we shouldn't overwrite)
-if [ -d "/mnt/jfs/%s" ]; then
-	if [ -z "$(ls -A /mnt/jfs/%s)" ]; then
-		echo "Target directory exists but is empty, removing it..."
-		rmdir /mnt/jfs/%s
-	else
-		echo "Target directory exists and has files, aborting!"
-		exit 1
-	fi
-fi
-
-echo "Cloning snapshot to new volume using native juicefs clone..."
-juicefs clone /mnt/jfs/.snapshots/%s/%s /mnt/jfs/%s
-
-echo "=========================================="
-echo "Restore completed successfully!"
-echo "Time: $(date)"
-echo "=========================================="
-
-umount /mnt/jfs -l && rmdir /mnt/jfs || true
-`, snapshotID, sourceVolumeID, targetVolumeID, mountCmd, targetPath, targetPath, targetPath, sourceVolumeID, snapshotID, targetPath)
-
-	cmd := strings.Join([]string{initCmd, restoreCmd}, "\n")
-	job.Spec.Template.Spec.Containers[0].Command = []string{"sh", "-c", cmd}
-
-	return job
-}
-
-func (r *JobBuilder) NewJobForDeleteSnapshot(jobName, snapshotID, sourceVolumeID string) *batchv1.Job {
-	job := r.newJob(jobName)
-	ttlSecond := int32(300)
-	backoffLimit := int32(3)
-	job.Spec.TTLSecondsAfterFinished = &ttlSecond
-	job.Spec.BackoffLimit = &backoffLimit
-
-	// Add delete-specific labels
-	job.ObjectMeta.Labels["app"] = "juicefs-delete-snapshot"
-	job.ObjectMeta.Labels["snapshot"] = snapshotID
-	job.Spec.Template.ObjectMeta.Labels = map[string]string{
-		"app": "juicefs-delete-snapshot",
-		"job": jobName,
-	}
-
-	// Generate mount command and modify for delete operation
-	mountCmd := r.getJobCommand()
-	initCmd := r.genInitCommand()
-
-	deleteCmd := fmt.Sprintf(`
-set -ex
-echo "=========================================="
-echo "JuiceFS Snapshot Deletion"
-echo "Snapshot: %s"
-echo "Source Volume: %s"
-echo "=========================================="
-
-echo "Mounting JuiceFS..."
-%s
-sleep 2
-
-echo "Deleting snapshot directory..."
-juicefs rmr /mnt/jfs/.snapshots/%s/%s
-
-echo "=========================================="
-echo "Snapshot deleted successfully!"
-echo "=========================================="
-
-umount /mnt/jfs -l && rmdir /mnt/jfs || true
-`, snapshotID, sourceVolumeID, mountCmd, sourceVolumeID, snapshotID)
-
-	cmd := strings.Join([]string{initCmd, deleteCmd}, "\n")
-	job.Spec.Template.Spec.Containers[0].Command = []string{"sh", "-c", cmd}
-
-	return job
 }

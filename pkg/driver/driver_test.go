@@ -31,7 +31,6 @@ import (
 	"github.com/juicedata/juicefs-csi-driver/pkg/config"
 	k8s "github.com/juicedata/juicefs-csi-driver/pkg/k8sclient"
 	"github.com/juicedata/juicefs-csi-driver/pkg/util"
-	"github.com/juicedata/juicefs-csi-driver/pkg/util/dispatch"
 )
 
 func TestNewDriver(t *testing.T) {
@@ -51,9 +50,7 @@ func TestNewDriver(t *testing.T) {
 			defer patch3.Reset()
 
 			patch4 := ApplyFunc(newProvisionerService, func(k8sClient *k8s.K8sClient) (provisionerService, error) {
-				return provisionerService{
-					quotaPool: dispatch.NewPool(defaultQuotaPoolNum),
-				}, nil
+				return provisionerService{}, nil
 			})
 			defer patch4.Reset()
 			var tmpCmd = &exec.Cmd{}

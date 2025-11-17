@@ -27,10 +27,8 @@ import (
 	"time"
 
 	. "github.com/agiledragon/gomonkey/v2"
-	"github.com/juicedata/juicefs-csi-driver/pkg/common"
 	. "github.com/smartystreets/goconvey/convey"
 	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 func TestContainsString(t *testing.T) {
@@ -677,177 +675,56 @@ func TestParseClientVersion(t *testing.T) {
 	}
 }
 
-func TestSupportFusePassPod(t *testing.T) {
+func TestClientVersion_SupportFusePass(t *testing.T) {
 	tests := []struct {
-		name string
-		pod  *corev1.Pod
-		want bool
+		name  string
+		image string
+		want  bool
 	}{
 		{
-			name: "nil pod",
-			pod:  nil,
-			want: false,
+			name:  "dev",
+			image: "juicedata/mount:v1.2.3-dev",
+			want:  false,
 		},
 		{
-			name: "pod without containers",
-			pod:  &corev1.Pod{},
-			want: false,
+			name:  "ce-1.2.1",
+			image: "juicedata/mount:ce-v1.2.1",
+			want:  true,
 		},
 		{
-			name: "pod with preStop umount command",
-			pod: &corev1.Pod{
-				Spec: corev1.PodSpec{
-					Containers: []corev1.Container{
-						{
-							Image: "juicedata/mount:ce-v1.2.1",
-							Lifecycle: &corev1.Lifecycle{
-								PreStop: &corev1.LifecycleHandler{
-									Exec: &corev1.ExecAction{
-										Command: []string{"sh", "-c", "umount /mnt/jfs"},
-									},
-								},
-							},
-						},
-					},
-				},
-			},
-			want: false,
+			name:  "ce-1.3.0",
+			image: "juicedata/mount:ce-v1.3.0",
+			want:  true,
 		},
 		{
-			name: "pod with nightly image",
-			pod: &corev1.Pod{
-				Spec: corev1.PodSpec{
-					Containers: []corev1.Container{
-						{
-							Image: "juicedata/mount:ce-nightly",
-						},
-					},
-				},
-			},
-			want: true,
+			name:  "ce-2.0.0",
+			image: "juicedata/mount:ce-v2.0.0",
+			want:  true,
 		},
 		{
-			name: "pod with dev image",
-			pod: &corev1.Pod{
-				Spec: corev1.PodSpec{
-					Containers: []corev1.Container{
-						{
-							Image: "juicedata/mount:v1.2.3-dev",
-						},
-					},
-				},
-			},
-			want: false,
+			name:  "ee-5.1.0",
+			image: "juicedata/mount:ee-5.1.0-xxx",
+			want:  true,
 		},
 		{
-			name: "pod with supporting image (ce-v1.2.1)",
-			pod: &corev1.Pod{
-				Spec: corev1.PodSpec{
-					Containers: []corev1.Container{
-						{
-							Image: "juicedata/mount:ce-v1.2.1",
-						},
-					},
-				},
-			},
-			want: true,
+			name:  "ee-6.1.0",
+			image: "juicedata/mount:ee-6.1.0-xxx",
+			want:  true,
 		},
 		{
-			name: "pod with supporting image (ce-v1.3.0)",
-			pod: &corev1.Pod{
-				Spec: corev1.PodSpec{
-					Containers: []corev1.Container{
-						{
-							Image: "juicedata/mount:ce-v1.3.0",
-						},
-					},
-				},
-			},
-			want: true,
+			name:  "ce-nightly",
+			image: "juicedata/mount:ce-nightly",
+			want:  true,
 		},
 		{
-			name: "pod with supporting image (ce-v2.0.0)",
-			pod: &corev1.Pod{
-				Spec: corev1.PodSpec{
-					Containers: []corev1.Container{
-						{
-							Image: "juicedata/mount:ce-v2.0.0",
-						},
-					},
-				},
-			},
-			want: true,
-		},
-		{
-			name: "pod with supporting image (ee-5.1.0)",
-			pod: &corev1.Pod{
-				Spec: corev1.PodSpec{
-					Containers: []corev1.Container{
-						{
-							Image: "juicedata/mount:ee-5.1.0",
-						},
-					},
-				},
-			},
-			want: true,
-		},
-		{
-			name: "pod with supporting image (ee-5.3.0)",
-			pod: &corev1.Pod{
-				Spec: corev1.PodSpec{
-					Containers: []corev1.Container{
-						{
-							Image: "juicedata/mount:ee-5.3.0",
-						},
-					},
-				},
-			},
-			want: true,
-		},
-		{
-			name: "pod with supporting image (ee-6.3.0)",
-			pod: &corev1.Pod{
-				Spec: corev1.PodSpec{
-					Containers: []corev1.Container{
-						{
-							Image: "juicedata/mount:ee-6.3.0",
-						},
-					},
-				},
-			},
-			want: true,
-		},
-		{
-			name: "pod with non-supporting image (ce-v1.1.0)",
-			pod: &corev1.Pod{
-				Spec: corev1.PodSpec{
-					Containers: []corev1.Container{
-						{
-							Image: "juicedata/mount:ce-v1.1.0",
-						},
-					},
-				},
-			},
-			want: false,
-		},
-		{
-			name: "pod with non-supporting image (ee-4.9.0)",
-			pod: &corev1.Pod{
-				Spec: corev1.PodSpec{
-					Containers: []corev1.Container{
-						{
-							Image: "juicedata/mount:ee-4.9.0",
-						},
-					},
-				},
-			},
-			want: false,
+			name:  "ee-nightly",
+			image: "juicedata/mount:ee-nightly",
+			want:  true,
 		},
 	}
-
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := SupportFusePass(tt.pod); got != tt.want {
+			if got := SupportFusePass(tt.image); got != tt.want {
 				t.Errorf("SupportFusePass() = %v, want %v", got, tt.want)
 			}
 		})
@@ -1343,327 +1220,6 @@ func TestDeDuplicate(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := DeDuplicate(tt.args.target); !reflect.DeepEqual(got, tt.want) {
 				t.Errorf("DeDuplicate() = %v, want %v", got, tt.want)
-			}
-		})
-	}
-}
-
-func TestGetMountPathOfSidecar(t *testing.T) {
-	type args struct {
-		pod           corev1.Pod
-		containerName string
-	}
-
-	var podNoSidecar = corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: "pod-without-sidecar",
-		},
-	}
-
-	var podWithSidecar = corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: "pod-with-sidecar",
-			Labels: map[string]string{
-				common.InjectSidecarDone: "true",
-			},
-		},
-		Spec: corev1.PodSpec{
-			Containers: []corev1.Container{
-				{
-					Name: "app-container",
-				},
-			},
-		},
-	}
-
-	var podWithShortCmd = corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: "pod-with-short-cmd",
-			Labels: map[string]string{
-				common.InjectSidecarDone: "true",
-			},
-		},
-		Spec: corev1.PodSpec{
-			Containers: []corev1.Container{
-				{
-					Name:    "mount-sidecar",
-					Command: []string{"sh", "-c"},
-					// Command too short
-				},
-			},
-		},
-	}
-
-	var podWithValidSidecar = corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: "pod-with-valid-sidecar",
-			Labels: map[string]string{
-				common.InjectSidecarDone: "true",
-			},
-		},
-		Spec: corev1.PodSpec{
-			Containers: []corev1.Container{
-				{
-					Name:    "mount-sidecar",
-					Command: []string{"sh", "-c", "/bin/mount.juicefs redis://127.0.0.1/6379 /jfs/pvc-xxx"},
-				},
-			},
-		},
-	}
-
-	var podWithInitSidecar = corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: "pod-with-init-sidecar",
-			Labels: map[string]string{
-				common.InjectSidecarDone: "true",
-			},
-		},
-		Spec: corev1.PodSpec{
-			InitContainers: []corev1.Container{
-				{
-					Name:    "init-mount-sidecar",
-					Command: []string{"sh", "-c", "/bin/mount.juicefs redis://127.0.0.1/6379 /jfs/pvc-yyy"},
-				},
-			},
-		},
-	}
-
-	tests := []struct {
-		name    string
-		args    args
-		want    string
-		want1   string
-		wantErr bool
-	}{
-		{
-			name: "pod has no sidecar",
-			args: args{
-				pod:           podNoSidecar,
-				containerName: "mount-sidecar",
-			},
-			want:    "",
-			want1:   "",
-			wantErr: true,
-		},
-		{
-			name: "pod has sidecar but container not found",
-			args: args{
-				pod:           podWithSidecar,
-				containerName: "mount-sidecar",
-			},
-			want:    "",
-			want1:   "",
-			wantErr: true,
-		},
-		{
-			name: "pod has sidecar but command invalid",
-			args: args{
-				pod:           podWithShortCmd,
-				containerName: "mount-sidecar",
-			},
-			want:    "",
-			want1:   "",
-			wantErr: true,
-		},
-		{
-			name: "pod has sidecar with valid command",
-			args: args{
-				pod:           podWithValidSidecar,
-				containerName: "mount-sidecar",
-			},
-			want:    "/jfs/pvc-xxx",
-			want1:   "pvc-xxx",
-			wantErr: false,
-		},
-		{
-			name: "pod has init container with valid command",
-			args: args{
-				pod:           podWithInitSidecar,
-				containerName: "init-mount-sidecar",
-			},
-			want:    "/jfs/pvc-yyy",
-			want1:   "pvc-yyy",
-			wantErr: false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got, got1, err := GetMountPathOfSidecar(tt.args.pod, tt.args.containerName)
-			if (err != nil) != tt.wantErr {
-				t.Errorf("GetMountPathOfSidecar() error = %v, wantErr %v", err, tt.wantErr)
-				return
-			}
-			if got != tt.want {
-				t.Errorf("GetMountPathOfSidecar() got = %v, want %v", got, tt.want)
-			}
-			if got1 != tt.want1 {
-				t.Errorf("GetMountPathOfSidecar() got1 = %v, want %v", got1, tt.want1)
-			}
-		})
-	}
-}
-
-func TestSupportQuotaPathCreate(t *testing.T) {
-	type args struct {
-		ce      bool
-		version string
-	}
-	tests := []struct {
-		name string
-		args args
-		want bool
-	}{
-		{
-			name: "ce-nightly",
-			args: args{
-				ce:      true,
-				version: "nightly",
-			},
-			want: true,
-		},
-		{
-			name: "ce-below-minimum",
-			args: args{
-				ce:      true,
-				version: "juicefs version 1.2.0+2024-06-18.873c47b9",
-			},
-			want: false,
-		},
-		{
-			name: "ce-at-minimum",
-			args: args{
-				ce:      true,
-				version: "juicefs version 1.3.0+2024-06-18.873c47b9",
-			},
-			want: true,
-		},
-		{
-			name: "ee-below-minimum",
-			args: args{
-				ce:      false,
-				version: "juicefs version 4.9.0 (2023-03-28 bfeaf6a)",
-			},
-			want: false,
-		},
-		{
-			name: "ee-at-minimum",
-			args: args{
-				ce:      false,
-				version: "juicefs version 5.2.2 (2024-09-09 5a1303e2)",
-			},
-			want: true,
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := SupportQuotaPathCreate(tt.args.ce, tt.args.version); got != tt.want {
-				t.Errorf("SupportQuotaPathCreate() = %v, want %v", got, tt.want)
-			}
-		})
-	}
-}
-
-func TestIsConfigEncrypted(t *testing.T) {
-	tests := []struct {
-		name       string
-		initConfig string
-		want       bool
-	}{
-		{
-			name:       "empty config",
-			initConfig: "",
-			want:       false,
-		},
-		{
-			name:       "invalid JSON",
-			initConfig: "not a valid json",
-			want:       false,
-		},
-		{
-			name:       "JSON without encryptkeys",
-			initConfig: `{"otherKey": "value"}`,
-			want:       false,
-		},
-		{
-			name:       "encryptkeys not a boolean",
-			initConfig: `{"encryptkeys": "true"}`,
-			want:       false,
-		},
-		{
-			name:       "encryptkeys true",
-			initConfig: `{"encryptkeys": true}`,
-			want:       true,
-		},
-		{
-			name:       "encryptkeys false",
-			initConfig: `{"encryptkeys": false}`,
-			want:       false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := IsConfigEncrypted(tt.initConfig); got != tt.want {
-				t.Errorf("IsConfigEncrypted() = %v, want %v", got, tt.want)
-			}
-		})
-	}
-}
-
-func TestRemoveIllegalChars(t *testing.T) {
-	tests := []struct {
-		name     string
-		input    string
-		expected string
-	}{
-		{
-			name:     "no illegal characters",
-			input:    "Hello, World!",
-			expected: "Hello, World!",
-		},
-		{
-			name:     "empty string",
-			input:    "",
-			expected: "",
-		},
-		{
-			name:     "with escaped characters 1",
-			input:    "node.kubernetes.io/unreachable\\x00\\x00\\x00",
-			expected: "node.kubernetes.io/unreachable",
-		},
-		{
-			name:     "with escaped characters 2",
-			input:    "node.kubernetes.io/unreachable\x00",
-			expected: "node.kubernetes.io/unreachable",
-		},
-		{
-			name:     "with escaped characters 3",
-			input:    "Hello,\n\t World!",
-			expected: "Hello, World!",
-		},
-		{
-			name:     "with escaped characters 4",
-			input:    "Hello, 世界! 👋",
-			expected: "Hello, !",
-		},
-		{
-			name:     "with escaped characters 5",
-			input:    "\n\t\r\b\f\v",
-			expected: "",
-		},
-		{
-			name:     "with escaped characters 6",
-			input:    "ABC\nDEF\tGHI\rJKL",
-			expected: "ABCDEFGHIJKL",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := RemoveIllegalChars(tt.input)
-			if got != tt.expected {
-				t.Errorf("RemoveIllegalChars() = %q, want %q", got, tt.expected)
 			}
 		})
 	}

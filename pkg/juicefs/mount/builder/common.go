@@ -76,16 +76,8 @@ func (r *BaseBuilder) genPodTemplate(baseCnGen func() corev1.Container) *corev1.
 // genCommonJuicePod generates a pod with common settings
 func (r *BaseBuilder) genCommonJuicePod(cnGen func() corev1.Container) *corev1.Pod {
 	// gen again to update the mount pod spec
-	if err := config.GenPodAttrWithCfg(r.jfsSetting, nil, true); err != nil {
+	if err := config.GenPodAttrWithCfg(r.jfsSetting, nil); err != nil {
 		builderLog.Error(err, "genCommonJuicePod gen pod attr failed, mount pod may not be the expected config")
-	}
-	if !r.jfsSetting.IsCe && r.jfsSetting.InitConfig != "" {
-		// if init-config encrypted, but mount pod does not support
-		// remove init config from mount pod
-		if util.IsConfigEncrypted(r.jfsSetting.InitConfig) && !util.SupportConfigEncrypt(r.jfsSetting.Attr.Image) {
-			builderLog.Info("mount pod does not support config encrypt, remove init config", "volume", r.jfsSetting.VolumeId, "mountImage", r.jfsSetting.Attr.Image)
-			r.jfsSetting.InitConfig = ""
-		}
 	}
 	pod := r.genPodTemplate(cnGen)
 	// labels & annotations
@@ -93,9 +85,7 @@ func (r *BaseBuilder) genCommonJuicePod(cnGen func() corev1.Container) *corev1.P
 	pod.Spec.ServiceAccountName = r.jfsSetting.Attr.ServiceAccountName
 	pod.Spec.PriorityClassName = config.JFSMountPriorityName
 	pod.Spec.RestartPolicy = corev1.RestartPolicyAlways
-	if hostname := r.genHostname(); hostname != "" {
-		pod.Spec.Hostname = hostname
-	}
+	pod.Spec.Hostname = r.jfsSetting.VolumeId
 	gracePeriod := int64(10)
 	if r.jfsSetting.Attr.TerminationGracePeriodSeconds != nil {
 		gracePeriod = *r.jfsSetting.Attr.TerminationGracePeriodSeconds
@@ -125,7 +115,7 @@ func (r *BaseBuilder) genCommonJuicePod(cnGen func() corev1.Container) *corev1.P
 	pod.Spec.Containers[0].Resources = r.jfsSetting.Attr.Resources
 	// if image support passFd from csi, do not set umount preStop
 	if r.jfsSetting.Attr.Lifecycle == nil {
-		if !util.SupportFusePass(pod) || config.Webhook {
+		if !util.SupportFusePass(pod.Spec.Containers[0].Image) || config.Webhook {
 			pod.Spec.Containers[0].Lifecycle = &corev1.Lifecycle{
 				PreStop: &corev1.LifecycleHandler{
 					Exec: &corev1.ExecAction{Command: []string{"sh", "-c", "+e", fmt.Sprintf(
@@ -155,27 +145,12 @@ func (r *BaseBuilder) genCommonJuicePod(cnGen func() corev1.Container) *corev1.P
 	return pod
 }
 
-func (r *BaseBuilder) genHostname() string {
-	// set hostname according to jfsSetting.Attr.HostnameKey
-	// default is volumeid
-	hostnameKey := strings.ToLower(r.jfsSetting.Attr.HostnameKey)
-	switch hostnameKey {
-	case "podname":
-		// if hostname is none, use pod name by default
-		return ""
-	case "volumeid":
-		fallthrough
-	default:
-		return r.jfsSetting.VolumeId
-	}
-}
-
 // genMountCommand generates mount command
 func (r *BaseBuilder) genMountCommand() string {
 	cmd := ""
 	options := []string{}
 	subdir := r.jfsSetting.SubPath
-	if r.jfsSetting.MountShareMode == "" {
+	if !config.StorageClassShareMount {
 		for _, option := range r.jfsSetting.Options {
 			if strings.HasPrefix(option, "subdir=") {
 				s := strings.Split(option, "=")
@@ -307,9 +282,6 @@ func GenMetadata(jfsSetting *config.JfsSetting) (labels map[string]string, annot
 			// new pod do not need upgradeProcess annotation
 			annotations[k] = v
 		}
-	}
-	if jfsSetting.MountShareMode != "" {
-		annotations[common.JuicefsMountShareMode] = jfsSetting.MountShareMode
 	}
 	// inter labels & annotations
 	annotations[common.JuiceFSUUID] = jfsSetting.UUID
